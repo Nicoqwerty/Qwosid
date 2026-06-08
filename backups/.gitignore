@@ -1,0 +1,4 @@
+# Ignore all backup files but keep this folder tracked
+*
+!.gitkeep
+!.gitignore
