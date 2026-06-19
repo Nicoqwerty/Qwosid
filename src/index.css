@@ -28,9 +28,42 @@ button {
   transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.08s ease;
 }
 
+button:hover {
+  filter: brightness(1.12);
+}
+
 button:active {
-  transform: scale(0.97) translateY(1px);
-  filter: brightness(0.9);
+  transform: scale(0.985) translateY(0.5px);
+  filter: brightness(0.93);
+}
+
+/* ── theme touches ───────────────────────────────────────────────────────── */
+::selection {
+  background: #ff1d8e;
+  color: #fff;
+}
+
+input,
+textarea,
+[contenteditable] {
+  caret-color: #ff1d8e;
+}
+
+::placeholder {
+  color: #555;
+  opacity: 1;
+}
+
+/* Inline styles set the resting border, so focus needs !important to win */
+input:focus,
+textarea:focus {
+  border-color: #ff1d8e !important;
+}
+
+/* Keyboard-navigation focus ring (mouse clicks don't trigger this) */
+:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 1px;
 }
 
 /* ── custom scrollbars ───────────────────────────────────────────────────── */

@@ -1,357 +1,14 @@
 import { useState, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
-import { jsPDF } from "jspdf";
 import { parsePDFFile } from "./parsePDF.js";
-
-// ── tiny uid ──────────────────────────────────────────────────────────────────
-const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-
-// ── local storage operations ──────────────────────────────────────────────────
-const localDB = {
-  async save(stories, currentStoryId, folders) {
-    try {
-      localStorage.setItem('qwosid_stories', JSON.stringify(stories));
-      localStorage.setItem('qwosid_folders', JSON.stringify(folders || []));
-      if (currentStoryId) {
-        localStorage.setItem('qwosid_currentStoryId', currentStoryId);
-      } else {
-        localStorage.removeItem('qwosid_currentStoryId');
-      }
-      return true;
-    } catch (error) {
-      console.error("Error saving:", error);
-      return false;
-    }
-  },
-
-  async load() {
-    try {
-      let storiesData = localStorage.getItem('qwosid_stories');
-      if (!storiesData) {
-        const legacy = localStorage.getItem('storyOrganizerData');
-        if (legacy) {
-          storiesData = legacy;
-          localStorage.setItem('qwosid_stories', legacy);
-          localStorage.removeItem('storyOrganizerData');
-        }
-      }
-      const currentStoryId = localStorage.getItem('qwosid_currentStoryId');
-      const foldersData    = localStorage.getItem('qwosid_folders');
-      return {
-        stories:       storiesData  ? JSON.parse(storiesData)  : null,
-        currentStoryId: currentStoryId || null,
-        folders:       foldersData  ? JSON.parse(foldersData)  : [],
-      };
-    } catch (error) {
-      console.error("Error loading:", error);
-      return { stories: null, currentStoryId: null, folders: [] };
-    }
-  },
-};
-
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-const SECTIONS = ["Home", "Chapters", "Characters", "Outline", "Relationships", "Notes", "Search"];
-const STATUS_CYCLE = [undefined, "Draft", "Revising", "Final"];
-const STATUS_COLOR = { Draft: "#888", Revising: "#f59e0b", Final: "#22c55e" };
-
-
-const CHARACTER_TRAITS = [
-  "Brave", "Cowardly", "Honest", "Deceptive", "Kind", "Cruel",
-  "Intelligent", "Naive", "Ambitious", "Lazy", "Loyal", "Treacherous",
-  "Compassionate", "Selfish", "Humorous", "Serious", "Impulsive",
-  "Calculated", "Charismatic", "Introverted", "Optimistic", "Pessimistic",
-  "Stubborn", "Adaptable", "Creative", "Logical", "Empathetic", "Cold",
-  "Generous", "Greedy", "Reckless", "Cautious", "Mysterious",
-  "Open-minded", "Arrogant", "Humble",
-];
-
-// ── screenplay PDF export ──────────────────────────────────────────────────────
-const SP = { PAGE_W: 612, PAGE_H: 792, MX: 108, MY: 72, MR: 72, MB: 72, LINE_H: 14.4, CHAR_X: 266, DIALOG_X: 180, DIALOG_W: 252, PAREN_X: 216 };
-
-function _drawScreenplay(doc, content, initY, addPageFn) {
-  const { MX, LINE_H, CHAR_X, DIALOG_X, DIALOG_W, PAREN_X, PAGE_W, PAGE_H, MR, MB } = SP;
-  const CW = PAGE_W - MX - MR;
-  let y = initY;
-
-  function ensureRoom(n) {
-    if (y + n * LINE_H > PAGE_H - MB) y = addPageFn();
-  }
-
-  function writeWrapped(text, x, maxW) {
-    for (const line of doc.splitTextToSize(text, maxW)) {
-      if (y + LINE_H > PAGE_H - MB) y = addPageFn();
-      doc.text(line, x, y);
-      y += LINE_H;
-    }
-  }
-
-  const rawLines = (content || "").split("\n");
-  let prevBlank = true;
-  let state = "action";
-
-  for (const raw of rawLines) {
-    const t = raw.trim();
-    if (!t) { y += LINE_H; prevBlank = true; state = "action"; continue; }
-
-    const allCaps = t === t.toUpperCase() && /[A-Z]/.test(t);
-    const isScene = /^(INT\.|EXT\.|INT\.\/EXT\.|I\/E\.)/i.test(t);
-    const isTransition = /^(FADE (IN|OUT)|CUT TO|SMASH CUT|DISSOLVE TO|MATCH CUT)\b/i.test(t);
-    const isParen = t.startsWith("(") && t.endsWith(")");
-    const isChar = allCaps && !isScene && !isTransition && t.length <= 40 && prevBlank;
-
-    if (isScene) {
-      if (!prevBlank) y += LINE_H;
-      writeWrapped(t.toUpperCase(), MX, CW);
-    } else if (isTransition) {
-      ensureRoom(1);
-      doc.text(t.toUpperCase(), PAGE_W - MR, y, { align: "right" });
-      y += LINE_H * 2;
-      state = "action";
-    } else if (isChar) {
-      ensureRoom(3);
-      y += LINE_H;
-      doc.text(t, CHAR_X, y);
-      y += LINE_H;
-      state = "dialogue";
-    } else if (isParen && state === "dialogue") {
-      ensureRoom(1);
-      doc.text(t, PAREN_X, y);
-      y += LINE_H;
-    } else if (state === "dialogue") {
-      writeWrapped(t, DIALOG_X, DIALOG_W);
-    } else {
-      writeWrapped(t, MX, CW);
-      state = "action";
-    }
-    prevBlank = false;
-  }
-}
-
-function exportChapterAsPDF(chapter) {
-  const doc = new jsPDF({ unit: "pt", format: "letter" });
-  doc.setFont("Courier", "normal");
-  doc.setFontSize(12);
-  const { MX, MY, LINE_H, PAGE_W, MR } = SP;
-  let pageNum = 1;
-
-  function addPage() {
-    doc.addPage(); pageNum++;
-    doc.setFont("Courier", "normal"); doc.setFontSize(12);
-    doc.text(`${pageNum}.`, PAGE_W - MR, MY - LINE_H);
-    return MY;
-  }
-
-  let y = MY;
-  doc.text((chapter.title || "UNTITLED").toUpperCase(), MX, y);
-  y += LINE_H * 2;
-  _drawScreenplay(doc, chapter.content, y, addPage);
-  doc.save(`${(chapter.title || "chapter").replace(/[^a-zA-Z0-9\s-]/g, "")}.pdf`);
-}
-
-function exportAllChaptersAsPDF(storyTitle, chapters) {
-  const doc = new jsPDF({ unit: "pt", format: "letter" });
-  doc.setFont("Courier", "normal");
-  doc.setFontSize(12);
-  const { MX, MY, LINE_H, PAGE_W, PAGE_H, MR } = SP;
-  let pageNum = 1;
-
-  function addPage() {
-    doc.addPage(); pageNum++;
-    doc.setFont("Courier", "normal"); doc.setFontSize(12);
-    doc.text(`${pageNum}.`, PAGE_W - MR, MY - LINE_H);
-    return MY;
-  }
-
-  // Title page
-  doc.text((storyTitle || "UNTITLED").toUpperCase(), PAGE_W / 2, PAGE_H / 2 - LINE_H, { align: "center" });
-  doc.setFontSize(11);
-  doc.text("Written with Qwosid", PAGE_W / 2, PAGE_H / 2 + LINE_H, { align: "center" });
-  doc.setFontSize(12);
-
-  for (const ch of chapters) {
-    let y = addPage();
-    doc.text((ch.title || "UNTITLED CHAPTER").toUpperCase(), MX, y);
-    y += LINE_H * 2;
-    _drawScreenplay(doc, ch.content, y, addPage);
-  }
-
-  doc.save(`${(storyTitle || "screenplay").replace(/[^a-zA-Z0-9\s-]/g, "")}.pdf`);
-}
-
-function exportStoryAsPDF(story) {
-  const doc  = new jsPDF({ unit: "mm", format: "a4" });
-  const PW   = doc.internal.pageSize.getWidth();
-  const PH   = doc.internal.pageSize.getHeight();
-  const ML = 20, MR = 20, MT = 22, MB = 18;
-  const CW   = PW - ML - MR;
-  let y = MT;
-
-  const stripLinks = t => (t || "").replace(/\[\[([^\|]+)\|[^\]]+\]\]/g, "$1");
-
-  function newPage() { doc.addPage(); y = MT; }
-
-  function need(h) { if (y + h > PH - MB) newPage(); }
-
-  function setStyle(size, style = "normal", r = 201, g = 185, b = 154) {
-    doc.setFont("helvetica", style);
-    doc.setFontSize(size);
-    doc.setTextColor(r, g, b);
-  }
-
-  function txt(raw, size = 11, style = "normal", color = [201, 185, 154]) {
-    if (!raw?.trim()) return;
-    setStyle(size, style, ...color);
-    const lines = doc.splitTextToSize(stripLinks(raw), CW);
-    for (const line of lines) {
-      need(size * 0.45 + 1);
-      doc.text(line, ML, y);
-      y += size * 0.45;
-    }
-    y += 2;
-  }
-
-  function label(lbl) {
-    need(7);
-    setStyle(8, "bold", 120, 100, 80);
-    doc.text(lbl.toUpperCase(), ML, y);
-    y += 5;
-  }
-
-  function itemTitle(t, size = 15) {
-    need(size * 0.5 + 6);
-    setStyle(size, "bold", 255, 29, 142);
-    doc.text(t || "Untitled", ML, y);
-    y += size * 0.5 + 4;
-  }
-
-  function divider() {
-    need(6);
-    doc.setDrawColor(60, 20, 60);
-    doc.setLineWidth(0.3);
-    doc.line(ML, y, ML + CW, y);
-    y += 5;
-  }
-
-  function sectionPage(title) {
-    newPage();
-    doc.setFillColor(20, 6, 40);
-    doc.rect(0, 0, PW, PH, "F");
-    setStyle(36, "bold", 255, 29, 142);
-    doc.text(title.toUpperCase(), PW / 2, PH / 2 - 6, { align: "center" });
-    setStyle(11, "normal", 100, 90, 80);
-    doc.text(story.title || "Story", PW / 2, PH / 2 + 10, { align: "center" });
-    newPage();
-  }
-
-  // ── Cover ──────────────────────────────────────────────────────────────────
-  doc.setFillColor(13, 13, 13);
-  doc.rect(0, 0, PW, PH, "F");
-  setStyle(42, "bold", 255, 29, 142);
-  const titleLines = doc.splitTextToSize(story.title || "Untitled", CW - 10);
-  doc.text(titleLines, PW / 2, PH / 2 - titleLines.length * 10, { align: "center" });
-  setStyle(10, "normal", 100, 90, 80);
-  doc.text("Exported from Qwosid", PW / 2, PH - 20, { align: "center" });
-
-  const charMap = Object.fromEntries((story.characters || []).map(c => [c.id, c]));
-
-  // ── Home / Story Notes ──────────────────────────────────────────────────────
-  if (story.homeContent?.trim()) {
-    sectionPage("Story Notes");
-    txt(story.homeContent);
-  }
-
-  // ── Chapters ────────────────────────────────────────────────────────────────
-  if (story.chapters?.length) {
-    sectionPage("Chapters");
-    story.chapters.forEach((ch, i) => {
-      need(24);
-      itemTitle(`${i + 1}. ${ch.title || "Untitled"}`);
-      const wc = ch.content?.trim() ? ch.content.trim().split(/\s+/).length : 0;
-      const meta = [ch.status, `${wc} words`].filter(Boolean).join("  ·  ");
-      if (meta) { setStyle(9, "italic", 120, 120, 120); doc.text(meta, ML, y); y += 6; }
-      txt(ch.content);
-      divider();
-    });
-  }
-
-  // ── Characters ─────────────────────────────────────────────────────────────
-  if (story.characters?.length) {
-    sectionPage("Characters");
-    story.characters.forEach(c => {
-      need(20);
-      itemTitle(c.name || "Unnamed");
-      if (c.role)   { label("Role");       txt(c.role, 11); }
-      if (c.bio)    { label("Bio");        txt(c.bio,  11); }
-      const app = [
-        c.ethnicity  && `Ethnicity: ${c.ethnicity}`,
-        c.skinColor  && `Skin: ${c.skinColor}`,
-        c.eyeColor   && `Eyes: ${c.eyeColor}`,
-        c.hairColor  && `Hair: ${c.hairColor}`,
-        c.hairstyles?.length && `Hairstyles: ${c.hairstyles.join(", ")}`,
-      ].filter(Boolean);
-      if (app.length) { label("Appearance"); txt(app.join("  ·  "), 10, "italic"); }
-      if (c.traits?.length) { label("Traits"); txt(c.traits.join("  ·  "), 10); }
-      divider();
-    });
-  }
-
-  // ── Outline ─────────────────────────────────────────────────────────────────
-  if (story.outlines?.length) {
-    sectionPage("Outline");
-    story.outlines.forEach(group => {
-      need(14);
-      itemTitle(group.title || "Untitled", 13);
-      (group.subnotes || []).forEach(sn => {
-        need(10);
-        setStyle(10, "bold", 125, 211, 252);
-        doc.text(`• ${sn.title || ""}`, ML + 3, y); y += 5;
-        if (sn.content) txt(sn.content, 10);
-      });
-      y += 3;
-    });
-  }
-
-  // ── Relationships ───────────────────────────────────────────────────────────
-  if (story.relationships?.length) {
-    sectionPage("Relationships");
-    story.relationships.forEach(r => {
-      need(16);
-      const cA = charMap[r.charA]?.name || "?";
-      const cB = charMap[r.charB]?.name || "?";
-      itemTitle(`${cA}  ↔  ${cB}`, 13);
-      if (r.description) txt(r.description, 11);
-      divider();
-    });
-  }
-
-  // ── Notes ───────────────────────────────────────────────────────────────────
-  if (story.notes?.length) {
-    sectionPage("Notes");
-    story.notes.forEach(group => {
-      need(14);
-      itemTitle(group.title || "Untitled", 13);
-      (group.subnotes || []).forEach(sn => {
-        need(10);
-        setStyle(10, "bold", 125, 211, 252);
-        doc.text(`• ${sn.title || ""}`, ML + 3, y); y += 5;
-        if (sn.content) txt(sn.content, 10);
-      });
-      y += 3;
-    });
-  }
-
-  // ── Page footers ────────────────────────────────────────────────────────────
-  const total = doc.internal.getNumberOfPages();
-  for (let p = 2; p <= total; p++) {
-    doc.setPage(p);
-    setStyle(7, "normal", 80, 70, 60);
-    doc.text(story.title || "Story", ML, PH - 8);
-    doc.text(`${p - 1}`, PW - MR, PH - 8, { align: "right" });
-  }
-
-  doc.save(`${(story.title || "story").replace(/[^a-zA-Z0-9 \-]/g, "").trim()}.pdf`);
-}
+import { uid, localDB } from "./storage.js";
+import { exportChapterAsPDF, exportAllChaptersAsPDF, exportStoryAsPDF } from "./pdfExport.js";
+import { SECTIONS, STATUS_CYCLE, STATUS_COLOR, ACT_CYCLE, TRASH_RETENTION_DAYS, styles } from "./constants.js";
+import {
+  LINK_RE, parseAndRenderLinks, renderRichPreview, ChapterEditor, PinIcon, FolderIcon,
+  EditableText, EditableArea, CharBadge, Label, FormField, FormTextarea,
+  OutlineEditor, ColorFieldWithHistory, HairstyleInput, TraitSelector,
+} from "./components.jsx";
 
 export default function StoryOrganizer() {
   const [stories, setStories] = useState([]);
@@ -389,12 +46,15 @@ export default function StoryOrganizer() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [itemToDelete, setItemToDelete] = useState(null); // { type, id, name }
   const [showTraitsModal, setShowTraitsModal] = useState(false);
-  const [charTab, setCharTab] = useState("detail");
+  const [charTabs, setCharTabs] = useState({}); // per-character Detail/Outline view, keyed by character id
+  // Legacy navigation calls setCharTab("detail"); now a no-op so each character
+  // keeps whichever sub-tab it was last on when you switch tabs/panes.
+  const setCharTab = () => {};
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [storySearchQuery, setStorySearchQuery] = useState("");
-  const [selectedSubNoteId, setSelectedSubNoteId] = useState(null);
+  const [selectedSubNotes, setSelectedSubNotes] = useState({}); // open sub-note per note/outline group, keyed by group id
   const [importData, setImportData] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const importInputRef = useRef(null);
@@ -406,18 +66,36 @@ export default function StoryOrganizer() {
   const [listSearchQuery, setListSearchQuery] = useState("");
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
+  const [draggingFolderId, setDraggingFolderId] = useState(null);
+  const [dragOverFolderId, setDragOverFolderId] = useState(null); // folder id, or "root" for the section root
+  const [dropZone, setDropZone] = useState(null); // { id, zone: 'before'|'after'|'inside' } during a folder-tree drag
+  const [renamingItemFolderId, setRenamingItemFolderId] = useState(null);
   const [pdfParsing, setPdfParsing] = useState(false);
   const [pdfPreview, setPdfPreview] = useState(null); // { format, fileName, items[] }
   const [pdfTab, setPdfTab] = useState("all");
   const [selectedPdfItems, setSelectedPdfItems] = useState(new Set());
   const pdfImportRef = useRef(null);
+  const [lastBackupAt, setLastBackupAt] = useState(() => {
+    const v = Number(localStorage.getItem('qwosid_lastBackupAt'));
+    return v > 0 ? v : null;
+  });
+  const [focusChapterId, setFocusChapterId] = useState(null);
+  const [showSnapshots, setShowSnapshots] = useState(false);
+  const [searchTypeFilter, setSearchTypeFilter] = useState("All");
+  const [searchStatusFilter, setSearchStatusFilter] = useState(null);
 
-  // Load from localStorage on mount
+  // Load on mount (disk file first, localStorage fallback); purge expired trash
   useEffect(() => {
     localDB.load().then(({ stories: saved, currentStoryId: savedId, folders: savedFolders }) => {
       if (saved && saved.length > 0) {
-        setStories(saved);
-        if (savedId && saved.find(s => s.id === savedId)) {
+        const cutoff = Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+        const purged = saved.map(s =>
+          (s.trash || []).some(t => t.deletedAt <= cutoff)
+            ? { ...s, trash: s.trash.filter(t => t.deletedAt > cutoff) }
+            : s
+        );
+        setStories(purged);
+        if (savedId && purged.find(s => s.id === savedId)) {
           setCurrentStoryId(savedId);
         }
       }
@@ -425,8 +103,15 @@ export default function StoryOrganizer() {
     });
   }, []);
 
+  // Esc leaves focus mode
+  useEffect(() => {
+    if (!focusChapterId) return;
+    const handler = e => { if (e.key === 'Escape') setFocusChapterId(null); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [focusChapterId]);
+
   // Reset sub-note selection when the selected note group changes
-  useEffect(() => { setSelectedSubNoteId(null); }, [selected]);
   // Reset list search when switching sections
   useEffect(() => { setListSearchQuery(""); }, [section]);
 
@@ -466,7 +151,7 @@ export default function StoryOrganizer() {
   useEffect(() => {
     if (!window.electronAPI) return;
     window.electronAPI.onBeforeClose(() => flushSync(() => setShowCloseModal(true)));
-    window.electronAPI.onAutoBackup?.(() => exportBackup());
+    window.electronAPI.onAutoBackup?.(() => exportBackup(true));
   }, []);
 
   // Auto-save to localStorage 1s after any change
@@ -525,6 +210,7 @@ export default function StoryOrganizer() {
     Relationships: currentStory.relationships || [],
     Chapters: currentStory.chapters || [],
     Timeline: currentStory.chapters || [],
+    OutlineTimeline: currentStory.outlines || [],
     Notes: currentStory.notes || [],
     Outline: currentStory.outlines || [],
     Map: [],
@@ -545,20 +231,100 @@ export default function StoryOrganizer() {
     ));
   }
 
+  // Soft delete: items move to the story's trash and stay restorable for
+  // TRASH_RETENTION_DAYS (purged on app load).
   function deleteItem(collection, id) {
-    setStories(stories.map(s => 
-      s.id === currentStoryId 
-        ? {
-            ...s,
-            [collection]: s[collection].filter(x => x.id !== id),
-            // Also remove rels that reference a deleted character
-            ...(collection === "characters" ? {
-              relationships: s.relationships.filter(r => r.charA !== id && r.charB !== id),
-            } : {}),
-          }
+    const now = Date.now();
+    setStories(stories.map(s => {
+      if (s.id !== currentStoryId) return s;
+      const item = (s[collection] || []).find(x => x.id === id);
+      if (!item) return s;
+      const trashed = [{ collection, item, deletedAt: now }];
+      if (collection === "characters") {
+        for (const r of s.relationships.filter(r => r.charA === id || r.charB === id)) {
+          trashed.push({ collection: "relationships", item: r, deletedAt: now });
+        }
+      }
+      return {
+        ...s,
+        [collection]: s[collection].filter(x => x.id !== id),
+        ...(collection === "characters" ? {
+          relationships: s.relationships.filter(r => r.charA !== id && r.charB !== id),
+        } : {}),
+        trash: [...(s.trash || []), ...trashed],
+      };
+    }));
+    setSelected(null);
+  }
+
+  function restoreTrashItem(itemId) {
+    setStories(stories.map(s => {
+      if (s.id !== currentStoryId) return s;
+      const entry = (s.trash || []).find(t => t.item.id === itemId);
+      if (!entry) return s;
+      return {
+        ...s,
+        [entry.collection]: [...(s[entry.collection] || []), entry.item],
+        trash: s.trash.filter(t => t.item.id !== itemId),
+      };
+    }));
+  }
+
+  function purgeTrashItem(itemId) {
+    setStories(stories.map(s =>
+      s.id === currentStoryId ? { ...s, trash: (s.trash || []).filter(t => t.item.id !== itemId) } : s
+    ));
+  }
+
+  function emptyTrash() {
+    setStories(stories.map(s => s.id === currentStoryId ? { ...s, trash: [] } : s));
+  }
+
+  // ── chapter snapshots ──────────────────────────────────────────────────────
+  const MAX_SNAPSHOTS = 20;
+
+  function mutateChapter(chapterId, fn) {
+    setStories(stories.map(s =>
+      s.id === currentStoryId
+        ? { ...s, chapters: s.chapters.map(ch => ch.id === chapterId ? fn(ch) : ch) }
         : s
     ));
-    setSelected(null);
+  }
+
+  function snapOf(ch, label) {
+    return { id: uid(), at: Date.now(), label: label || "", content: ch.content || "" };
+  }
+
+  function takeSnapshot(chapterId, label = "") {
+    mutateChapter(chapterId, ch => ({ ...ch, snapshots: [...(ch.snapshots || []), snapOf(ch, label)].slice(-MAX_SNAPSHOTS) }));
+  }
+
+  // Restoring snapshots is itself reversible: current content is snapshotted first
+  function restoreSnapshot(chapterId, snapId) {
+    mutateChapter(chapterId, ch => {
+      const snap = (ch.snapshots || []).find(x => x.id === snapId);
+      if (!snap) return ch;
+      return { ...ch, content: snap.content, snapshots: [...(ch.snapshots || []), snapOf(ch, "Before restore")].slice(-MAX_SNAPSHOTS) };
+    });
+  }
+
+  function deleteSnapshot(chapterId, snapId) {
+    mutateChapter(chapterId, ch => ({ ...ch, snapshots: (ch.snapshots || []).filter(x => x.id !== snapId) }));
+  }
+
+  // Status cycle; reaching Final auto-snapshots the chapter in the same update
+  function cycleChapterStatus(chapterId) {
+    mutateChapter(chapterId, ch => {
+      const next = STATUS_CYCLE[(STATUS_CYCLE.indexOf(ch.status) + 1) % STATUS_CYCLE.length];
+      const snaps = next === "Final" && (ch.content || "").trim()
+        ? [...(ch.snapshots || []), snapOf(ch, "Marked Final")].slice(-MAX_SNAPSHOTS)
+        : ch.snapshots;
+      return { ...ch, status: next, ...(snaps !== ch.snapshots ? { snapshots: snaps } : {}) };
+    });
+  }
+
+  function cycleChapterAct(chapterId) {
+    mutateChapter(chapterId, ch => ({ ...ch, act: ACT_CYCLE[(ACT_CYCLE.indexOf(ch.act || "") + 1) % ACT_CYCLE.length] }));
   }
 
   // ── sub-note mutations ─────────────────────────────────────────────────────
@@ -569,7 +335,7 @@ export default function StoryOrganizer() {
         ? { ...s, [collKey]: (s[collKey] || []).map(n => n.id === noteId ? { ...n, subnotes: [...(n.subnotes || []), sn] } : n) }
         : s
     ));
-    setSelectedSubNoteId(sn.id);
+    setSelectedSubNotes(prev => ({ ...prev, [noteId]: sn.id }));
   }
 
   function updateSubNote(noteId, subNoteId, field, value, collKey = "notes") {
@@ -586,7 +352,7 @@ export default function StoryOrganizer() {
         ? { ...s, [collKey]: (s[collKey] || []).map(n => n.id === noteId ? { ...n, subnotes: (n.subnotes || []).filter(sn => sn.id !== subNoteId) } : n) }
         : s
     ));
-    setSelectedSubNoteId(null);
+    setSelectedSubNotes(prev => ({ ...prev, [noteId]: null }));
   }
 
   function addItem() {
@@ -766,7 +532,7 @@ export default function StoryOrganizer() {
     if (sec === "Home") return (
       <div style={SCROLL}>
         <div style={{ fontFamily: "'Bangers', cursive", fontSize: 36, color: "#ff1d8e", textShadow: "3px 3px 0 #3a0a2e", marginBottom: 20 }}>{currentStory.title}</div>
-        <div style={PROSE}>{parseAndRenderLinks(currentStory.homeContent || "", null)}</div>
+        <div style={PROSE} dangerouslySetInnerHTML={{ __html: currentStory.homeContent || "" }} />
       </div>
     );
 
@@ -798,7 +564,7 @@ export default function StoryOrganizer() {
             <div style={{ fontFamily: "'Bangers', cursive", fontSize: 34, color: "#ff1d8e", flex: 1, textShadow: "2px 2px 0 #3a0a2e" }}>{ch.title}</div>
             {ch.status && <span style={{ background: statusColor + "22", border: `1px solid ${statusColor}`, color: statusColor, borderRadius: 20, padding: "3px 12px", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>{ch.status}</span>}
           </div>
-          <div style={PROSE}>{parseAndRenderLinks(ch.content || "", null)}</div>
+          <div style={PROSE} dangerouslySetInnerHTML={{ __html: ch.content || "" }} />
         </div>
       );
     }
@@ -846,7 +612,9 @@ export default function StoryOrganizer() {
   }
 
   function createFolder() {
-    setFolders(f => [...f, { id: uid(), name: "New Folder", collapsed: false }]);
+    const id = uid();
+    setFolders(f => [...f, { id, name: "New Folder", collapsed: false }]);
+    setRenamingFolderId(id);
   }
   function deleteFolder(id) {
     setFolders(f => f.filter(x => x.id !== id));
@@ -883,21 +651,28 @@ export default function StoryOrganizer() {
   }
 
   // ── backup / restore ───────────────────────────────────────────────────────
-  async function exportBackup() {
+  async function exportBackup(silent = false) {
     const payload = JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), stories }, null, 2);
     try {
       if (window.electronAPI?.saveBackup) {
         const result = await window.electronAPI.saveBackup(payload);
         if (result?.ok) {
-          alert("Backup saved to:\n" + result.path);
-        } else {
-          alert("Backup failed: " + (result?.error || "unknown error"));
+          const now = Date.now();
+          setLastBackupAt(now);
+          try { localStorage.setItem('qwosid_lastBackupAt', String(now)); } catch { /* indicator only */ }
         }
-      } else {
+        if (!silent) {
+          if (result?.ok) alert("Backup saved to:\n" + result.path);
+          else alert("Backup failed: " + (result?.error || "unknown error"));
+        }
+        return !!result?.ok;
+      } else if (!silent) {
         alert("Backup API not available — is the app running in Electron?");
       }
+      return false;
     } catch (err) {
-      alert("Backup error: " + err.message);
+      if (!silent) alert("Backup error: " + err.message);
+      return false;
     }
   }
 
@@ -1104,7 +879,7 @@ export default function StoryOrganizer() {
 
   function reorderItems(fromId, toId) {
     if (!fromId || !toId || fromId === toId) return;
-    const keyMap = { Characters: "characters", Relationships: "relationships", Chapters: "chapters", Notes: "notes", Outline: "outlines" };
+    const keyMap = { Characters: "characters", Relationships: "relationships", Chapters: "chapters", Notes: "notes", Outline: "outlines", Timeline: "chapters", OutlineTimeline: "outlines" };
     const key = keyMap[section];
     if (!key) return;
     setStories(stories.map(s => {
@@ -1119,29 +894,145 @@ export default function StoryOrganizer() {
     }));
   }
 
+  // ── item folders (Characters / Notes / Outline; nestable) ───────────────────
+  // Stored per-story in `itemFolders`: { id, name, section, parentId, collapsed }.
+  // Items carry an optional `folderId`; missing/unknown folder = section root.
+  const FOLDER_SECTIONS = ["Characters", "Notes", "Outline"];
+
+  function itemFolders() { return currentStory?.itemFolders || []; }
+
+  function mutateStory(fn) {
+    setStories(stories.map(s => s.id === currentStoryId ? fn(s) : s));
+  }
+
+  function addItemFolder(sec, parentId = null) {
+    const folder = { id: uid(), name: "New Folder", section: sec, parentId, collapsed: false };
+    mutateStory(s => ({ ...s, itemFolders: [...(s.itemFolders || []), folder] }));
+    setRenamingItemFolderId(folder.id);
+  }
+
+  function renameItemFolder(id, name) {
+    if (!name.trim()) return;
+    mutateStory(s => ({ ...s, itemFolders: (s.itemFolders || []).map(f => f.id === id ? { ...f, name: name.trim() } : f) }));
+  }
+
+  function toggleItemFolder(id) {
+    mutateStory(s => ({ ...s, itemFolders: (s.itemFolders || []).map(f => f.id === id ? { ...f, collapsed: !f.collapsed } : f) }));
+  }
+
+  // Delete a folder; its child folders and items reparent to the folder's parent
+  function deleteItemFolder(id, collKey) {
+    mutateStory(s => {
+      const folder = (s.itemFolders || []).find(f => f.id === id);
+      if (!folder) return s;
+      const up = folder.parentId || null;
+      return {
+        ...s,
+        itemFolders: (s.itemFolders || []).filter(f => f.id !== id).map(f => f.parentId === id ? { ...f, parentId: up } : f),
+        [collKey]: (s[collKey] || []).map(it => it.folderId === id ? { ...it, folderId: up } : it),
+      };
+    });
+  }
+
+  function moveItemToFolder(collKey, itemId, folderId) {
+    mutateStory(s => ({ ...s, [collKey]: (s[collKey] || []).map(it => it.id === itemId ? { ...it, folderId: folderId || null } : it) }));
+  }
+
+  // Would moving `folderId` under `targetId` create a cycle?
+  function isFolderDescendant(folders, folderId, targetId) {
+    let cur = folders.find(f => f.id === targetId);
+    while (cur) {
+      if (cur.id === folderId) return true;
+      cur = folders.find(f => f.id === cur.parentId);
+    }
+    return false;
+  }
+
+  function moveFolderToParent(folderId, parentId) {
+    if (folderId === parentId) return;
+    mutateStory(s => {
+      const folders = s.itemFolders || [];
+      if (parentId && isFolderDescendant(folders, folderId, parentId)) return s; // no cycles
+      return { ...s, itemFolders: folders.map(f => f.id === folderId ? { ...f, parentId: parentId || null } : f) };
+    });
+  }
+
+  // Unified drag-move for the folder tree: drop a folder or item before/after a
+  // target (same level) or inside a folder. Reassigns level-scoped `order` to
+  // both folders and items so they interleave; pinned items still float on top.
+  function moveNode(dragId, dragKind, targetId, targetKind, zone, collKey) {
+    mutateStory(s => {
+      let folders = s.itemFolders || [];
+      let coll = s[collKey] || [];
+      const validF = () => new Set(folders.map(f => f.id));
+
+      // resolve destination container (folder id, or null for section root)
+      let container;
+      if (zone === "inside" && targetKind === "folder") container = targetId;
+      else if (targetId == null) container = null;
+      else {
+        const t = targetKind === "folder" ? folders.find(f => f.id === targetId) : coll.find(i => i.id === targetId);
+        if (!t) return s;
+        container = targetKind === "folder" ? (t.parentId || null) : (t.folderId || null);
+      }
+
+      if (dragKind === "folder") {
+        if (dragId === container) return s;
+        if (container && isFolderDescendant(folders, dragId, container)) return s; // no cycles
+        folders = folders.map(f => f.id === dragId ? { ...f, parentId: container } : f);
+      } else {
+        coll = coll.map(i => i.id === dragId ? { ...i, folderId: container } : i);
+      }
+
+      // current ordering at the destination level, dragged removed
+      const vf = validF();
+      const containerOf = i => (i.folderId && vf.has(i.folderId)) ? i.folderId : null;
+      const levelF = folders.filter(f => f.section === section && (f.parentId || null) === container);
+      const levelI = coll.filter(i => containerOf(i) === container);
+      let ordered = [...levelF, ...levelI]
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .map(n => n.id)
+        .filter(id => id !== dragId);
+
+      if (zone === "inside" || targetId == null || zone === "end") {
+        ordered.push(dragId);
+      } else {
+        const idx = ordered.indexOf(targetId);
+        ordered.splice(idx < 0 ? ordered.length : (zone === "before" ? idx : idx + 1), 0, dragId);
+      }
+
+      const om = new Map(ordered.map((id, i) => [id, i]));
+      folders = folders.map(f => om.has(f.id) ? { ...f, order: om.get(f.id) } : f);
+      coll = coll.map(i => om.has(i.id) ? { ...i, order: om.get(i.id) } : i);
+      return { ...s, itemFolders: folders, [collKey]: coll };
+    });
+  }
+
   // ── search ─────────────────────────────────────────────────────────────────
   function getSearchResults() {
     if (!currentStory || !searchQuery.trim()) return [];
     const q = searchQuery.toLowerCase();
+    const want = type => searchTypeFilter === "All" || searchTypeFilter === type;
     const results = [];
-    currentStory.characters.forEach(c => {
+    if (want("Characters")) currentStory.characters.forEach(c => {
       if ([c.name, c.role, c.bio, c.ethnicity, ...(c.traits || [])].some(f => f?.toLowerCase().includes(q))) {
         results.push({ type: "Characters", id: c.id, label: c.name || "Unnamed", color: c.color });
       }
     });
-    currentStory.relationships.forEach(r => {
+    if (want("Relationships")) currentStory.relationships.forEach(r => {
       const cA = charMap[r.charA], cB = charMap[r.charB];
       const label = `${cA?.name || "?"} & ${cB?.name || "?"}`;
       if (label.toLowerCase().includes(q) || r.description?.toLowerCase().includes(q)) {
         results.push({ type: "Relationships", id: r.id, label });
       }
     });
-    currentStory.chapters.forEach(c => {
+    if (want("Chapters")) currentStory.chapters.forEach(c => {
+      if (searchStatusFilter && c.status !== searchStatusFilter) return;
       if (c.title?.toLowerCase().includes(q) || c.content?.toLowerCase().includes(q)) {
         results.push({ type: "Chapters", id: c.id, label: c.title || "Untitled" });
       }
     });
-    currentStory.notes.forEach(n => {
+    if (want("Notes")) currentStory.notes.forEach(n => {
       if (n.title?.toLowerCase().includes(q) || n.content?.toLowerCase().includes(q)) {
         results.push({ type: "Notes", id: n.id, label: n.title || "Untitled" });
       }
@@ -1158,7 +1049,9 @@ export default function StoryOrganizer() {
   }
 
   // ── detail panel ───────────────────────────────────────────────────────────
-  function renderDetail() {
+  // section/selected are parameters so each split pane renders its own content
+  // with the full editable view (params shadow the active-pane state inside here).
+  function renderDetail(section, selected) {
     if (section === "Home") {
       return (
         <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "28px 40px 24px", boxSizing: "border-box" }}>
@@ -1177,6 +1070,9 @@ export default function StoryOrganizer() {
         </div>
       );
     }
+    if (section === "Trash") {
+      return <div style={styles.empty}>Deleted items are kept for {TRASH_RETENTION_DAYS} days, then removed automatically. Restore or remove them from the list on the left.</div>;
+    }
     if (!selected) return <div style={styles.empty}>Select an item to view details.</div>;
 
     if (section === "Characters") {
@@ -1184,8 +1080,28 @@ export default function StoryOrganizer() {
       if (!c) return null;
       const rels = relsFor(c.id);
       const outline = c.outline || [];
+      const charTab = charTabs[c.id] || "detail"; // this character's remembered sub-tab
+
+      // Where this character appears: link chips ([[Name|Sec|id]]) or plain name mentions
+      const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const nameRe = c.name?.trim() ? new RegExp(`\\b${escapeRe(c.name.trim())}\\b`, "i") : null;
+      const idTag = `|${c.id}]]`;
+      const mentions = [];
+      (currentStory.chapters || []).forEach(ch => {
+        const txt = ch.content || "";
+        if (txt.includes(idTag) || (nameRe && nameRe.test(txt))) mentions.push({ sec: "Chapters", id: ch.id, label: ch.title || "Untitled" });
+      });
+      [["Notes", "notes"], ["Outline", "outlines"]].forEach(([sec, key]) => {
+        (currentStory[key] || []).forEach(g => {
+          if (g.id === c.noteId) return; // the character's own super note doesn't count
+          const txt = `${g.title || ""} ${(g.subnotes || []).map(sn => `${sn.title || ""} ${sn.content || ""}`).join(" ")}`;
+          if (txt.includes(idTag) || (nameRe && nameRe.test(txt))) mentions.push({ sec, id: g.id, label: g.title || "Untitled" });
+        });
+      });
       return (
-        <div style={styles.detail}>
+        <div style={{ display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" }}>
+          {/* Fixed header + tabs */}
+          <div style={{ flexShrink: 0, padding: "28px 40px 0", maxWidth: 700 }}>
           {/* Always-visible header */}
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
             <div style={{ width: 52, height: 52, borderRadius: "50%", background: c.color, flexShrink: 0, border: "3px solid #2a2a2a", boxShadow: "3px 3px 0 #0d0d0d" }} />
@@ -1193,11 +1109,11 @@ export default function StoryOrganizer() {
           </div>
 
           {/* Tab bar */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
             {["detail", "outline"].map(tab => (
               <button
                 key={tab}
-                onClick={() => setCharTab(tab)}
+                onClick={() => setCharTabs(prev => ({ ...prev, [c.id]: tab }))}
                 style={{
                   background: charTab === tab ? "#ff1d8e" : "none",
                   border: `2px solid ${charTab === tab ? "#ff1d8e" : "#2a2a2a"}`,
@@ -1216,6 +1132,11 @@ export default function StoryOrganizer() {
               </button>
             ))}
           </div>
+          </div>
+
+          {/* Scrollable body */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 40px 32px", boxSizing: "border-box" }}>
+          <div style={styles.detail}>
 
           {/* ── Detail tab ── */}
           {charTab === "detail" && <>
@@ -1270,6 +1191,21 @@ export default function StoryOrganizer() {
               })}
             </div>}
 
+            <div style={{ borderTop: "2px dashed #2a2a2a", paddingTop: 20, marginBottom: 4 }}>
+              <div style={{ fontFamily: "'Bangers', cursive", fontSize: 20, letterSpacing: "0.05em", color: "#7dd3fc", marginBottom: 12, textShadow: "2px 2px 0 #0a203a" }}>Appears In</div>
+              {mentions.length === 0
+                ? <div style={{ color: "#555", fontStyle: "italic", fontSize: 13, marginBottom: 20 }}>Not mentioned in any chapters or notes yet.</div>
+                : <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+                    {mentions.map(m => (
+                      <button key={`${m.sec}-${m.id}`} onClick={() => { setSection(m.sec); setSelected(m.id); }}
+                        style={{ background: "#0d1428", border: "2px solid #1a2840", color: "#7dd3fc", borderRadius: 8, padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>
+                        {m.sec === "Chapters" ? "📄" : "📝"} {m.label}
+                      </button>
+                    ))}
+                  </div>
+              }
+            </div>
+
             {/* Super Note */}
             {(() => {
               const linkedNote = currentStory.notes.find(n => n.id === c.noteId);
@@ -1306,6 +1242,8 @@ export default function StoryOrganizer() {
               onRequestDelete={(block) => setItemToDelete({ type: "outline block", id: block.id, charId: c.id, name: block.text.trim().slice(0, 50) || "Empty block" })}
             />
           )}
+          </div>
+          </div>
         </div>
       );
     }
@@ -1326,28 +1264,118 @@ export default function StoryOrganizer() {
       );
     }
 
-    if (section === "Timeline") {
-      const chapters = currentStory.chapters || [];
-      if (chapters.length === 0) return <div style={styles.empty}>No chapters yet — add one with +</div>;
-      return (
-        <div style={{ height: "100%", overflowX: "auto", overflowY: "hidden", display: "flex", alignItems: "flex-start", padding: "32px 40px", gap: 16, boxSizing: "border-box" }}>
-          {chapters.map((ch, i) => {
-            const wc = ch.content?.trim() ? ch.content.trim().split(/\s+/).length : 0;
-            const color = STATUS_COLOR[ch.status] || "#555";
-            return (
-              <div key={ch.id} onClick={() => { setSection("Chapters"); setSelected(ch.id); openNewTab("Chapters", ch.id); }}
-                style={{ width: 180, flexShrink: 0, background: "#141414", border: "2px solid #2a2a2a", borderRadius: 12, padding: 16, cursor: "pointer", transition: "border-color 0.15s" }}
-                onMouseEnter={e => e.currentTarget.style.borderColor = "#ff1d8e"}
-                onMouseLeave={e => e.currentTarget.style.borderColor = "#2a2a2a"}>
-                <div style={{ fontSize: 10, color: "#555", marginBottom: 6, letterSpacing: "0.08em", textTransform: "uppercase" }}>Ch. {i + 1}</div>
-                <div style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 700, color: "#c9b99a", fontSize: 14, marginBottom: 10, lineHeight: 1.3 }}>{ch.title || "Untitled"}</div>
-                {ch.status && <div style={{ display: "inline-block", background: color + "22", border: `1px solid ${color}`, color, borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700, marginBottom: 8 }}>{ch.status}</div>}
-                <div style={{ fontSize: 11, color: "#555" }}>{wc} words</div>
-              </div>
-            );
-          })}
+    // Timeline strip shared by Timeline (chapters) and OutlineTimeline (outline
+    // groups). Cards wrap onto new rows when they run past the right edge; the
+    // connector arrow is grouped with the card that follows it, so it "follows"
+    // that card down to the next row on wrap. Cards drag to reorder; a ghost
+    // card at the end adds a new item.
+    function renderTimelineStrip(list, { renderDot, renderBody, onOpen, addLabel, addModal, renderFlag }) {
+      // Arrow connector, vertically aligned with the node-dot row above the cards
+      const arrow = (key) => (
+        <div key={key} style={{ width: 26, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center" }}>
+          <div style={{ height: 16 }} />
+          <div style={{ height: 20, display: "flex", alignItems: "center", color: "#3a3a3a", fontSize: 20, lineHeight: 1 }}>→</div>
         </div>
       );
+
+      const card = (item, i) => {
+        const isOver = dragOverId === item.id && draggingId !== item.id;
+        const flag = renderFlag ? renderFlag(item, i, list) : null;
+        return (
+          <div style={{ width: 190, flexShrink: 0, position: "relative", opacity: draggingId === item.id ? 0.4 : 1 }}
+            draggable
+            onDragStart={() => setDraggingId(item.id)}
+            onDragOver={e => { e.preventDefault(); setDragOverId(item.id); }}
+            onDrop={e => { e.preventDefault(); reorderItems(draggingId, item.id); setDraggingId(null); setDragOverId(null); }}
+            onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}>
+            {isOver && <div style={{ position: "absolute", left: -14, top: 14, bottom: 0, width: 2, background: "#ff1d8e", borderRadius: 1 }} />}
+            <div style={{ height: 16, lineHeight: "16px", textAlign: "center", fontFamily: "'Bangers', cursive", fontSize: 14, letterSpacing: "0.08em", color: "#c050a0", textShadow: "1px 1px 0 #3a0a2e", whiteSpace: "nowrap" }}>
+              {flag || ""}
+            </div>
+            <div style={{ width: 12, height: 12, borderRadius: "50%", background: renderDot(item), border: "2px solid #111", margin: "4px auto 12px", position: "relative" }} />
+            <div onClick={() => onOpen(item)}
+              style={{ background: "#141414", border: "2px solid #2a2a2a", borderRadius: 12, padding: 16, cursor: "pointer", transition: "border-color 0.15s" }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = "#ff1d8e"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = "#2a2a2a"}>
+              {renderBody(item, i)}
+            </div>
+          </div>
+        );
+      };
+
+      const addCard = (
+        <div style={{ width: 190, flexShrink: 0 }}>
+          <div style={{ height: 16 }} />
+          <div style={{ width: 12, height: 12, borderRadius: "50%", border: "2px dashed #3a3a3a", margin: "4px auto 12px", boxSizing: "border-box", background: "#111" }} />
+          <button onClick={() => setModal(addModal)}
+            style={{ width: "100%", background: "none", border: "2px dashed #3a3a3a", borderRadius: 12, padding: 16, color: "#666", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }}>
+            + {addLabel}
+          </button>
+        </div>
+      );
+
+      // Each [arrow + card] is one non-wrapping unit, so the arrow wraps down
+      // with its card. The first card has no leading arrow.
+      const unit = (children, key) => (
+        <div key={key} style={{ display: "flex", alignItems: "flex-start", flexShrink: 0 }}>{children}</div>
+      );
+
+      return (
+        <div style={{ height: "100%", overflowY: "auto", overflowX: "hidden", boxSizing: "border-box", padding: "24px 32px 32px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", rowGap: 20 }}>
+            {list.map((item, i) =>
+              i === 0
+                ? <div key={item.id} style={{ display: "flex", flexShrink: 0 }}>{card(item, 0)}</div>
+                : unit(<>{arrow(`a-${item.id}`)}{card(item, i)}</>, `u-${item.id}`)
+            )}
+            {list.length > 0
+              ? unit(<>{arrow("a-add")}{addCard}</>, "u-add")
+              : <div style={{ display: "flex", flexShrink: 0 }}>{addCard}</div>}
+          </div>
+        </div>
+      );
+    }
+
+    if (section === "Timeline") {
+      const stripLinks = t => (t || "").replace(/\[\[([^|\]]+)\|[^\]]*\]\]/g, "$1");
+      return renderTimelineStrip(currentStory.chapters || [], {
+        renderDot: ch => STATUS_COLOR[ch.status] || "#555",
+        onOpen: ch => { setSection("Chapters"); setSelected(ch.id); openNewTab("Chapters", ch.id); },
+        addLabel: "Add Chapter",
+        addModal: "addChap",
+        // Show the act label above the first chapter of each act
+        renderFlag: (ch, i, list) => (ch.act && (i === 0 || (list[i - 1].act || "") !== ch.act)) ? ch.act : null,
+        renderBody: (ch, i) => {
+          const text = stripLinks(ch.content).trim();
+          const wc = text ? text.split(/\s+/).length : 0;
+          const color = STATUS_COLOR[ch.status] || "#555";
+          return <>
+            <div style={{ fontSize: 10, color: "#555", marginBottom: 6, letterSpacing: "0.08em", textTransform: "uppercase" }}>Ch. {i + 1}</div>
+            <div style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 700, color: "#c9b99a", fontSize: 14, marginBottom: 10, lineHeight: 1.3 }}>{ch.title || "Untitled"}</div>
+            {ch.status && <div style={{ display: "inline-block", background: color + "22", border: `1px solid ${color}`, color, borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700, marginBottom: 8 }}>{ch.status}</div>}
+            {text && <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5, marginBottom: 8, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{text.slice(0, 140)}</div>}
+            <div style={{ fontSize: 11, color: "#555" }}>{wc} words</div>
+          </>;
+        },
+      });
+    }
+
+    if (section === "OutlineTimeline") {
+      return renderTimelineStrip(currentStory.outlines || [], {
+        renderDot: () => "#7dd3fc",
+        onOpen: g => { setSection("Outline"); setSelected(g.id); openNewTab("Outline", g.id); },
+        addLabel: "Add Group",
+        addModal: "addOutline",
+        renderBody: (g, i) => <>
+          <div style={{ fontSize: 10, color: "#555", marginBottom: 6, letterSpacing: "0.08em", textTransform: "uppercase" }}>Group {i + 1}</div>
+          <div style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 700, color: "#c9b99a", fontSize: 14, marginBottom: 10, lineHeight: 1.3 }}>{g.title || "Untitled"}</div>
+          {(g.subnotes || []).slice(0, 3).map(sn => (
+            <div key={sn.id} style={{ fontSize: 11, color: "#555", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>• {sn.title}</div>
+          ))}
+          {(g.subnotes || []).length > 3 && <div style={{ fontSize: 10, color: "#3a3a3a", marginTop: 4 }}>+{g.subnotes.length - 3} more</div>}
+          <div style={{ fontSize: 11, color: "#444", marginTop: 8 }}>{(g.subnotes || []).length} notes</div>
+        </>,
+      });
     }
 
     if (section === "Map") {
@@ -1389,15 +1417,56 @@ export default function StoryOrganizer() {
       const item = currentStory.chapters.find(x => x.id === selected);
       if (!item) return null;
       const statusColor = STATUS_COLOR[item.status] || "#555";
+      const snapshots = item.snapshots || [];
+      const CHIP = { padding: "4px 14px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "'Fredoka', sans-serif", flexShrink: 0 };
       return (
         <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: "28px 40px 24px", boxSizing: "border-box" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, marginBottom: 16 }}>
             <EditableText val={item.title} style={{ ...styles.detailTitle, marginBottom: 0, flex: 1 }} onEdit={v => updateField("chapters", item.id, "title", v)} />
-            <button onClick={() => { const i = (STATUS_CYCLE.indexOf(item.status) + 1) % STATUS_CYCLE.length; updateField("chapters", item.id, "status", STATUS_CYCLE[i]); }}
-              style={{ background: statusColor + "22", border: `2px solid ${statusColor}`, color: statusColor, padding: "4px 14px", borderRadius: 20, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "'Fredoka', sans-serif", flexShrink: 0 }}>
+            <button onClick={() => cycleChapterAct(item.id)} title="Cycle act"
+              style={{ ...CHIP, background: item.act ? "#28102a" : "none", border: `2px solid ${item.act ? "#c050a0" : "#2a2a2a"}`, color: item.act ? "#c050a0" : "#555" }}>
+              {item.act || "No Act"}
+            </button>
+            <button onClick={() => cycleChapterStatus(item.id)} title="Cycle status"
+              style={{ ...CHIP, background: statusColor + "22", border: `2px solid ${statusColor}`, color: statusColor }}>
               {item.status || "No Status"}
             </button>
+            <button onClick={() => setShowSnapshots(v => !v)} title="Snapshots"
+              style={{ ...CHIP, background: showSnapshots ? "#0a203a" : "none", border: "2px solid #7dd3fc", color: "#7dd3fc" }}>
+              📸 {snapshots.length}
+            </button>
+            <button onClick={() => setFocusChapterId(item.id)} title="Focus mode (Esc to exit)"
+              style={{ ...CHIP, background: "none", border: "2px solid #2a2a2a", color: "#888" }}>
+              ⛶ Focus
+            </button>
           </div>
+
+          {showSnapshots && (
+            <div style={{ flexShrink: 0, marginBottom: 16, background: "#0d0d0d", border: "1px solid #2a2a2a", borderRadius: 10, padding: "10px 14px", maxHeight: 200, overflowY: "auto" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "#555" }}>Snapshots — saved versions of this chapter</span>
+                <button style={{ background: "#0a203a", border: "2px solid #7dd3fc", color: "#7dd3fc", padding: "3px 12px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }}
+                  onClick={() => takeSnapshot(item.id)}>+ Take Snapshot</button>
+              </div>
+              {snapshots.length === 0 && <div style={{ color: "#555", fontStyle: "italic", fontSize: 12 }}>No snapshots yet. One is taken automatically when a chapter is marked Final.</div>}
+              {[...snapshots].reverse().map(sn => {
+                const txt = (sn.content || "").replace(/<[^>]*>/g, " ").trim();
+                const wc = txt ? txt.split(/\s+/).length : 0;
+                return (
+                  <div key={sn.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid #1a1a1a" }}>
+                    <span style={{ fontSize: 12, color: "#c9b99a", flexShrink: 0 }}>{new Date(sn.at).toLocaleString()}</span>
+                    {sn.label && <span style={{ fontSize: 10, color: "#c050a0", border: "1px solid #c050a0", borderRadius: 10, padding: "1px 8px", flexShrink: 0 }}>{sn.label}</span>}
+                    <span style={{ fontSize: 11, color: "#555", flex: 1 }}>{wc} words</span>
+                    <button style={{ background: "none", border: "1px solid #7dd3fc", color: "#7dd3fc", padding: "2px 10px", borderRadius: 4, cursor: "pointer", fontSize: 11, fontFamily: "'Fredoka', sans-serif", flexShrink: 0 }}
+                      onClick={() => { restoreSnapshot(item.id, sn.id); }}>Restore</button>
+                    <button style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}
+                      onClick={() => deleteSnapshot(item.id, sn.id)}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           <ChapterEditor key={item.id} content={item.content}
             requestLink={cb => { setLinkPicker({ onInsert: cb }); setLinkPickerQuery(""); setLinkPickerSection("Characters"); }}
             onNavigate={(sec, id) => { setSection(sec); setSelected(id); setCharTab("detail"); }}
@@ -1415,6 +1484,7 @@ export default function StoryOrganizer() {
       const item = (currentStory[collKey] || []).find(x => x.id === selected);
       if (!item) return null;
       const subnotes = item.subnotes || [];
+      const selectedSubNoteId = selectedSubNotes[item.id] || null; // this group's remembered sub-note
       const currentSub = subnotes.find(sn => sn.id === selectedSubNoteId);
       const linkedChar = currentStory.characters.find(ch => ch.noteId === item.id);
       return (
@@ -1433,7 +1503,7 @@ export default function StoryOrganizer() {
           {/* subnote tabs */}
           <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 10, marginBottom: 16, borderBottom: "2px dashed #2a2a2a", scrollbarWidth: "thin", scrollbarColor: "#333 transparent", flexShrink: 0 }}>
             {subnotes.map(sn => (
-              <button key={sn.id} onClick={() => setSelectedSubNoteId(sn.id)} style={{ background: selectedSubNoteId === sn.id ? "#ff1d8e" : "#1a1a1a", border: `2px solid ${selectedSubNoteId === sn.id ? "#ff1d8e" : "#2a2a2a"}`, color: selectedSubNoteId === sn.id ? "#0d0d0d" : "#b0a090", padding: "6px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "'Fredoka', sans-serif", whiteSpace: "nowrap", flexShrink: 0, boxShadow: selectedSubNoteId === sn.id ? "2px 2px 0 #3a0a2e" : "none" }}>
+              <button key={sn.id} onClick={() => setSelectedSubNotes(prev => ({ ...prev, [item.id]: sn.id }))} style={{ background: selectedSubNoteId === sn.id ? "#ff1d8e" : "#1a1a1a", border: `2px solid ${selectedSubNoteId === sn.id ? "#ff1d8e" : "#2a2a2a"}`, color: selectedSubNoteId === sn.id ? "#0d0d0d" : "#b0a090", padding: "6px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "'Fredoka', sans-serif", whiteSpace: "nowrap", flexShrink: 0, boxShadow: selectedSubNoteId === sn.id ? "2px 2px 0 #3a0a2e" : "none" }}>
                 {sn.title || "Untitled"}
               </button>
             ))}
@@ -1512,7 +1582,7 @@ export default function StoryOrganizer() {
     );
   }
 
-  const addActions = { Characters: "addChar", Relationships: "addRel", Chapters: "addChap", Notes: "addNote", Outline: "addOutline", Timeline: "addChap" };
+  const addActions = { Characters: "addChar", Relationships: "addRel", Chapters: "addChap", Notes: "addNote", Outline: "addOutline", Timeline: "addChap", OutlineTimeline: "addOutline" };
 
   function renderStoryModal() {
     if (!showStoryModal) return null;
@@ -1561,6 +1631,51 @@ export default function StoryOrganizer() {
     );
   }
 
+  // ── close-app backup prompt ────────────────────────────────────────────────
+  // Rendered on every top-level screen so the X-button prompt always appears
+  function renderCloseModal() {
+    if (!showCloseModal) return null;
+    return (
+      <div style={{ ...styles.overlay, zIndex: 9999 }}>
+        <div style={{ ...styles.modalBox, textAlign: "center", maxWidth: 360 }}>
+          <h3 style={{ fontFamily: "'Bangers', cursive", fontSize: 30, letterSpacing: "0.06em", color: "#ff1d8e", marginBottom: 12, borderBottom: "2px dashed #3a0a2e", paddingBottom: 12 }}>
+            Before You Go
+          </h3>
+          <p style={{ fontSize: 14, color: "#c9b99a", marginBottom: 24, lineHeight: 1.6 }}>
+            Save a backup before closing?
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <button
+              style={{ background: "#7dd3fc", border: "2px solid #3a6a8a", color: "#0d0d0d", padding: "10px 16px", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }}
+              onClick={async () => {
+                const ok = await exportBackup(true);
+                if (ok) {
+                  window.electronAPI.confirmClose();
+                } else {
+                  alert("Backup failed — your data was NOT saved to disk. The app will stay open.\nTry 'Download Backup' from the sidebar, or close without saving.");
+                }
+              }}
+            >
+              Save Backup &amp; Close
+            </button>
+            <button
+              style={{ background: "none", border: "1px solid #333", color: "#888", padding: "8px 16px", borderRadius: 6, cursor: "pointer", fontSize: 13, fontFamily: "'Fredoka', sans-serif" }}
+              onClick={() => window.electronAPI.confirmClose()}
+            >
+              Close Without Saving
+            </button>
+            <button
+              style={{ background: "none", border: "none", color: "#555", padding: "4px", cursor: "pointer", fontSize: 12, fontFamily: "'Fredoka', sans-serif" }}
+              onClick={() => setShowCloseModal(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── story selection screen ─────────────────────────────────────────────────
   if (!currentStoryId) {
     return (
@@ -1598,12 +1713,12 @@ export default function StoryOrganizer() {
                 return (
                   <div key={s.id}
                     draggable
-                    onDragStart={() => setDraggingId(s.id)}
-                    onDragOver={e => { e.preventDefault(); setDragOverId(s.id); }}
-                    onDrop={e => { e.preventDefault(); reorderStories(draggingId, s.id); setDraggingId(null); setDragOverId(null); }}
+                    onDragStart={e => { e.stopPropagation(); setDraggingId(s.id); }}
+                    onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOverId(s.id); }}
+                    onDrop={e => { e.preventDefault(); e.stopPropagation(); reorderStories(draggingId, s.id); setDraggingId(null); setDragOverId(null); }}
                     onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}
                     onClick={() => { if (!isEditingStories) setCurrentStoryId(s.id); }}
-                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", paddingLeft: indent ? 20 : 8, borderRadius: 4, marginBottom: 2, cursor: "grab", opacity: isDragging ? 0.4 : 1, borderTop: isOver ? "2px solid #ff1d8e" : "2px solid transparent" }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", paddingLeft: indent ? 28 : 10, borderRadius: 6, marginBottom: 2, cursor: "grab", opacity: isDragging ? 0.4 : 1, background: isOver ? "#2a1428" : "transparent", borderTop: isOver ? "2px solid #ff1d8e" : "2px solid transparent" }}
                   >
                     {isEditingStories && (
                       <input type="checkbox" checked={selectedStories.has(s.id)} onChange={() => {
@@ -1617,58 +1732,62 @@ export default function StoryOrganizer() {
                         onBlur={e => { renameStory(s.id, e.target.value); setRenamingStoryId(null); }}
                         onKeyDown={e => { if (e.key === "Enter") { renameStory(s.id, e.target.value); setRenamingStoryId(null); } if (e.key === "Escape") setRenamingStoryId(null); }}
                         onClick={e => e.stopPropagation()}
-                        style={{ ...styles.formInput, fontSize: 12, padding: "2px 6px", flex: 1 }} />
+                        style={{ ...styles.formInput, fontSize: 13, padding: "3px 6px", flex: 1, minWidth: 0 }} />
                     ) : (
-                      <span onClick={e => { if (isEditingStories) { e.stopPropagation(); setRenamingStoryId(s.id); } }}
-                        style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 600, color: "#b0a090", fontSize: 13, flex: 1, cursor: isEditingStories ? "text" : "pointer" }}>
+                      <span title={s.title} onDoubleClick={e => { e.stopPropagation(); setRenamingStoryId(s.id); }}
+                        style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 600, color: "#b0a090", fontSize: 13, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: isEditingStories ? "text" : "pointer" }}>
                         {s.title}
                       </span>
                     )}
-                    {isEditingStories && (
-                      <select value={s.folderId || ""} onChange={e => { setStoryFolder(s.id, e.target.value || null); }} onClick={e => e.stopPropagation()}
-                        style={{ fontSize: 10, background: "#1a1a1a", border: "1px solid #333", color: "#666", borderRadius: 3, padding: "1px 2px", cursor: "pointer", flexShrink: 0, maxWidth: 70 }}>
-                        <option value="">No folder</option>
-                        {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                      </select>
-                    )}
-                    <button onClick={e => { e.stopPropagation(); toggleStoryPin(s.id); }} style={{ background: "none", border: "none", color: s.pinned ? "#ff1d8e" : "#2a2a2a", cursor: "pointer", fontSize: 13, padding: 0, flexShrink: 0, lineHeight: 1 }}>●</button>
+                    <button title={s.pinned ? "Unpin" : "Pin"} onClick={e => { e.stopPropagation(); toggleStoryPin(s.id); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 1, display: "flex", flexShrink: 0 }}>
+                      <PinIcon pinned={s.pinned} />
+                    </button>
                   </div>
                 );
               };
 
               return (
-                <div style={{ maxHeight: 340, overflowY: "auto", paddingRight: 4 }}>
+                <div style={{ maxHeight: 360, overflowY: "auto", paddingRight: 4 }}
+                  onDragOver={e => { if (draggingId) { e.preventDefault(); setDragOverId("ungroup"); } }}
+                  onDrop={e => { if (draggingId) { e.preventDefault(); setStoryFolder(draggingId, null); setDraggingId(null); setDragOverId(null); } }}
+                >
+                  {stories.length === 0 && <div style={{ padding: "16px 4px", color: "#555", fontStyle: "italic", fontSize: 12 }}>No stories yet — make one below.</div>}
                   {ungrouped.map(s => renderStoryRow(s, false))}
                   {folders.map(folder => {
                     const folderStories = pin(matched.filter(s => s.folderId === folder.id));
                     if (folderStories.length === 0 && q && !isEditingStories) return null;
+                    const over = dragOverId === "f-" + folder.id;
                     return (
-                      <div key={folder.id} style={{ marginBottom: 2 }}>
+                      <div key={folder.id} style={{ marginTop: 4 }}>
                         <div
                           onClick={() => toggleFolder(folder.id)}
-                          onDragOver={isEditingStories ? e => { e.preventDefault(); setDragOverId("f-" + folder.id); } : undefined}
-                          onDrop={isEditingStories ? e => { e.preventDefault(); if (draggingId) { setStoryFolder(draggingId, folder.id); } setDragOverId(null); } : undefined}
-                          style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderRadius: 4, background: dragOverId === "f-" + folder.id ? "#2a1428" : "#1a1a1a", cursor: "pointer", borderTop: dragOverId === "f-" + folder.id ? "2px solid #ff1d8e" : "2px solid transparent" }}
+                          onDragOver={e => { if (draggingId) { e.preventDefault(); e.stopPropagation(); setDragOverId("f-" + folder.id); } }}
+                          onDrop={e => { e.preventDefault(); e.stopPropagation(); if (draggingId) { setStoryFolder(draggingId, folder.id); } setDraggingId(null); setDragOverId(null); }}
+                          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderRadius: 6, background: over ? "#2a1428" : "#161616", cursor: "pointer", borderTop: over ? "2px solid #ff1d8e" : "2px solid transparent", marginBottom: 2 }}
                         >
-                          <span style={{ fontSize: 10, color: "#666", flexShrink: 0 }}>{folder.collapsed ? "▶" : "▼"}</span>
-                          <span style={{ fontSize: 13, flexShrink: 0 }}>📁</span>
+                          <span style={{ fontSize: 9, color: "#666", flexShrink: 0, width: 10 }}>{folder.collapsed ? "▶" : "▼"}</span>
+                          <FolderIcon />
                           {renamingFolderId === folder.id ? (
                             <input autoFocus defaultValue={folder.name}
                               onBlur={e => { renameFolder(folder.id, e.target.value); setRenamingFolderId(null); }}
                               onKeyDown={e => { if (e.key === "Enter") { renameFolder(folder.id, e.target.value); setRenamingFolderId(null); } if (e.key === "Escape") setRenamingFolderId(null); }}
                               onClick={e => e.stopPropagation()}
-                              style={{ ...styles.formInput, fontSize: 12, padding: "1px 6px", flex: 1 }} />
+                              style={{ ...styles.formInput, fontSize: 12, padding: "2px 6px", flex: 1, minWidth: 0 }} />
                           ) : (
-                            <span onClick={e => { if (isEditingStories) { e.stopPropagation(); setRenamingFolderId(folder.id); } }}
-                              style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 600, color: "#c9b99a", fontSize: 13, flex: 1, cursor: isEditingStories ? "text" : "pointer" }}>
+                            <span onDoubleClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); }}
+                              style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 700, color: "#c9b99a", fontSize: 13, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                               {folder.name} <span style={{ color: "#555", fontWeight: 400 }}>({folderStories.length})</span>
                             </span>
                           )}
-                          {isEditingStories && (
-                            <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete folder "${folder.name}"? Stories inside will become ungrouped.`)) deleteFolder(folder.id); }}
-                              style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
-                          )}
+                          <button title="Rename folder" onClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); }}
+                            style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>✎</button>
+                          <button title="Delete folder (keeps stories)" onClick={e => { e.stopPropagation(); deleteFolder(folder.id); }}
+                            style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
                         </div>
+                        {!folder.collapsed && folderStories.length === 0 && (
+                          <div style={{ padding: "5px 0 5px 28px", fontSize: 11, color: "#444", fontStyle: "italic" }}>Drag a story here</div>
+                        )}
                         {!folder.collapsed && folderStories.map(s => renderStoryRow(s, true))}
                       </div>
                     );
@@ -1676,16 +1795,16 @@ export default function StoryOrganizer() {
                 </div>
               );
             })()}
-            <div style={{ marginTop: 10 }}>
-              <button style={{ background: "none", border: "1px solid #333", color: "#c050a0", padding: "8px 12px", borderRadius: 4, cursor: "pointer", fontSize: 12, width: "100%" }} onClick={() => setShowStoryModal(true)}>New Story</button>
-              {isEditingStories && (
-                <button style={{ background: "none", border: "1px solid #333", color: "#7dd3fc", padding: "6px 12px", borderRadius: 4, cursor: "pointer", fontSize: 12, width: "100%", marginTop: 6 }} onClick={createFolder}>New Folder</button>
-              )}
-              <button style={{ background: isEditingStories ? "#ff1d8e" : "none", border: "1px solid #333", color: isEditingStories ? "#0d0d0d" : "#888", padding: "6px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11, width: "100%", marginTop: 6 }} onClick={() => setIsEditingStories(!isEditingStories)}>
-                {isEditingStories ? "Done Editing" : "Edit Stories"}
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button style={{ flex: 1, background: "none", border: "2px solid #ff1d8e", color: "#ff1d8e", padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }} onClick={() => setShowStoryModal(true)}>+ Story</button>
+                <button style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, background: "none", border: "2px solid #2a2a2a", color: "#888", padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }} onClick={createFolder}><FolderIcon /> Folder</button>
+              </div>
+              <button style={{ background: isEditingStories ? "#ff1d8e" : "none", border: `1px solid ${isEditingStories ? "#ff1d8e" : "#333"}`, color: isEditingStories ? "#0d0d0d" : "#888", padding: "6px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Fredoka', sans-serif", width: "100%", marginTop: 8 }} onClick={() => { setIsEditingStories(!isEditingStories); setSelectedStories(new Set()); }}>
+                {isEditingStories ? "Done" : "Select to Delete"}
               </button>
               {isEditingStories && selectedStories.size > 0 && (
-                <button style={{ background: "#ff1d8e", border: "2px solid #3a0a2e", color: "#0d0d0d", padding: "8px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12, width: "100%", marginTop: 6 }} onClick={() => setShowDeleteConfirm(true)}>
+                <button style={{ background: "#ff1d8e", border: "2px solid #3a0a2e", color: "#0d0d0d", padding: "8px 16px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "'Fredoka', sans-serif", width: "100%", marginTop: 6 }} onClick={() => setShowDeleteConfirm(true)}>
                   Delete Selected ({selectedStories.size})
                 </button>
               )}
@@ -1758,17 +1877,49 @@ export default function StoryOrganizer() {
 
         {renderStoryModal()}
         {renderImportModal()}
+        {renderCloseModal()}
+      </div>
+    );
+  }
+
+  // ── view toggle pill (List | Timeline, List | Map) ─────────────────────────
+  function ViewToggle({ views }) {
+    return (
+      <div style={{ display: "inline-flex", background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 14, padding: 2, gap: 2 }}>
+        {views.map(v => {
+          const active = section === v.sec;
+          return (
+            <button key={v.sec}
+              onClick={() => { if (!active) { setSection(v.sec); setSelected(null); } }}
+              style={{ background: active ? "#ff1d8e" : "none", color: active ? "#0d0d0d" : "#666", border: "none", borderRadius: 12, padding: "3px 12px", fontSize: 10, fontWeight: 700, cursor: active ? "default" : "pointer", fontFamily: "'Fredoka', sans-serif", letterSpacing: "0.04em" }}>
+              {v.label}
+            </button>
+          );
+        })}
       </div>
     );
   }
 
   // ── storage UI ─────────────────────────────────────────────────────────────
+  function backupAge() {
+    if (!lastBackupAt) return "never";
+    const mins = Math.floor((Date.now() - lastBackupAt) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  }
+
   function renderStorageStatus() {
     return (
-      <div style={{ padding: "0 20px", marginBottom: 16 }}>
+      <div style={{ margin: "16px 20px", paddingTop: 14, borderTop: "2px dashed #2a2a2a" }}>
         <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "#555", marginBottom: 6 }}>Storage</div>
         <div style={{ fontSize: 12, color: isSaving ? "#ff1d8e" : saveStatus ? "#4caf50" : "#444", fontWeight: 600, minHeight: 18, transition: "color 0.3s" }}>
           {isSaving ? "Saving..." : saveStatus || "Auto-saved"}
+        </div>
+        <div style={{ fontSize: 11, color: lastBackupAt ? "#555" : "#a05a00", marginTop: 2 }}>
+          Last backup: {backupAge()}
         </div>
       </div>
     );
@@ -1784,6 +1935,7 @@ export default function StoryOrganizer() {
             <div style={{ fontSize: 48, fontFamily: "'Bangers', cursive", letterSpacing: "0.04em", color: "#ff1d8e", textShadow: "3px 3px 0 #3a0a2e" }}>QWOSID</div>
           </div>
         </div>
+        {renderCloseModal()}
       </div>
     );
   }
@@ -1792,7 +1944,7 @@ export default function StoryOrganizer() {
     <div style={styles.root}>
       <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet" />
       {/* sidebar nav */}
-      <div style={{ ...styles.sidebar, width: sidebarCollapsed ? 40 : sidebarWidth, position: "relative", overflow: "hidden", transition: "width 0.15s" }}>
+      <div style={{ ...styles.sidebar, width: sidebarCollapsed ? 40 : sidebarWidth, position: "relative", overflowX: "hidden", overflowY: "auto", transition: "width 0.15s" }}>
         <div style={{ position: "absolute", top: 0, right: 0, width: 5, height: "100%", cursor: "ew-resize", zIndex: 10 }} onMouseDown={startSidebarResize} />
         {sidebarCollapsed ? (
           <button onClick={() => { setSidebarCollapsed(false); setSidebarWidth(lastSidebarWidth.current); }} style={{ width: 40, height: 40, background: "none", border: "none", color: "#ff1d8e", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>›</button>
@@ -1802,23 +1954,34 @@ export default function StoryOrganizer() {
             <button onClick={() => { lastSidebarWidth.current = sidebarWidth; setSidebarCollapsed(true); setSidebarWidth(40); }} style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 16, flexShrink: 0 }}>‹</button>
           </div>
           <div style={{ marginBottom: 16, padding: "0 20px" }}>
-          <div style={{ marginBottom: 12 }}>
-            <button style={{ background: "none", border: "2px solid #ff1d8e", color: "#ff1d8e", padding: "5px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "'Fredoka', sans-serif", display: "flex", alignItems: "center", gap: 6, letterSpacing: "0.04em" }} onClick={() => setCurrentStoryId(null)}>
-              ← Back
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <button title="Back to stories" onClick={() => setCurrentStoryId(null)}
+              style={{ background: "none", border: "2px solid #ff1d8e", color: "#ff1d8e", width: 30, height: 30, borderRadius: "50%", cursor: "pointer", fontSize: 16, fontWeight: 700, fontFamily: "'Fredoka', sans-serif", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, lineHeight: 1 }}>
+              ←
             </button>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
-            <span style={{ fontFamily: "'Bangers', cursive", color: "#7dd3fc", fontSize: 20, letterSpacing: "0.04em", textShadow: "2px 2px 0 #3a0a2e" }}>{currentStory.title}</span>
+            <span style={{ fontFamily: "'Bangers', cursive", color: "#7dd3fc", fontSize: 20, letterSpacing: "0.04em", textShadow: "2px 2px 0 #3a0a2e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentStory.title}</span>
           </div>
         </div>
-        {SECTIONS.map(s => (
+        {SECTIONS.filter(s => s !== "Search" && s !== "Trash").map(s => (
           <button key={s} style={{ ...styles.navBtn, ...(s === "Home" ? { padding: "6px 20px", fontSize: 11, letterSpacing: "0.12em", color: s === section ? undefined : "#555" } : {}), ...(s === section ? styles.navActive : {}) }} onClick={() => { setSection(s); setSelected(null); }}>
             {s === "Home" ? "⌂ Home" : s}
           </button>
         ))}
+        <div style={{ display: "flex", gap: 8, padding: "10px 20px 0" }}>
+          {[{ sec: "Search", icon: "🔍" }, { sec: "Trash", icon: "🗑" }].map(({ sec, icon }) => {
+            const active = section === sec;
+            return (
+              <button key={sec} title={sec} onClick={() => { setSection(sec); setSelected(null); }}
+                style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: active ? "#280820" : "none", border: `2px solid ${active ? "#ff1d8e" : "#2a2a2a"}`, color: active ? "#ff1d8e" : "#666", borderRadius: 8, padding: "8px 4px", cursor: "pointer", fontFamily: "'Fredoka', sans-serif", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", transition: "color 0.15s, border-color 0.15s" }}>
+                <span style={{ fontSize: 15, lineHeight: 1 }}>{icon}</span>
+                {sec}
+              </button>
+            );
+          })}
+        </div>
         {renderStorageStatus()}
         <div style={{ padding: "0 20px 20px" }}>
-          <div style={{ borderTop: "2px dashed #2a2a2a", paddingTop: 14 }}>
+          <div>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "#555", marginBottom: 8 }}>Export</div>
             <button style={{ background: "none", border: "2px solid #ff1d8e", color: "#ff1d8e", padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, width: "100%", fontFamily: "'Fredoka', sans-serif", marginBottom: 14 }} onClick={() => exportStoryAsPDF(currentStory)}>Export Story PDF</button>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "#555", marginBottom: 8 }}>Backup</div>
@@ -1836,28 +1999,43 @@ export default function StoryOrganizer() {
       {/* list panel */}
       <div style={{ ...styles.list, width: listWidth, position: "relative" }}>
         <div style={{ position: "absolute", top: 0, right: 0, width: 5, height: "100%", cursor: "ew-resize", zIndex: 10 }} onMouseDown={startListResize} />
-        <div style={styles.listHeader}>
-          <span style={styles.listTitle}>
-            {section === "Map" ? "Map" : section === "Timeline" ? "Timeline" : section}
-          </span>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {section === "Relationships" && (
-              <button style={{ background: "none", border: "none", color: "#555", padding: "0 4px", cursor: "pointer", fontSize: 12, fontFamily: "'Fredoka', sans-serif", fontWeight: 600, letterSpacing: "0.03em" }} onClick={() => { setSection("Map"); setSelected(null); }}>Map</button>
+        <div style={{ ...styles.listHeader, flexDirection: "column", alignItems: "stretch", gap: 0, padding: "14px 16px 10px" }}>
+          {/* row 1: title + add button */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={styles.listTitle}>
+              {section === "Map" ? "Relationships" : section === "Timeline" ? "Chapters" : section === "OutlineTimeline" ? "Outline" : section}
+            </span>
+            {section !== "Search" && section !== "Home" && section !== "Map" && section !== "Trash" && (
+              <button style={styles.plusBtn} onClick={() => setModal(addActions[section])}>+</button>
             )}
-            {section === "Map" && (
-              <button style={{ background: "none", border: "none", color: "#555", padding: "0 4px", cursor: "pointer", fontSize: 12, fontFamily: "'Fredoka', sans-serif" }} onClick={() => { setSection("Relationships"); setSelected(null); }}>← Back</button>
-            )}
-            {section === "Chapters" && (
-              <button style={{ background: "none", border: "none", color: "#555", padding: "0 4px", cursor: "pointer", fontSize: 12, fontFamily: "'Fredoka', sans-serif", fontWeight: 600, letterSpacing: "0.03em" }} onClick={() => { setSection("Timeline"); setSelected(null); }}>Timeline</button>
-            )}
-            {section === "Timeline" && (
-              <button style={{ background: "none", border: "none", color: "#555", padding: "0 4px", cursor: "pointer", fontSize: 12, fontFamily: "'Fredoka', sans-serif" }} onClick={() => { setSection("Chapters"); setSelected(null); }}>← Back</button>
-            )}
-            {section === "Chapters" && currentStory?.chapters?.length > 0 && (
-              <button style={{ ...styles.pdfBtn, marginTop: 0, padding: "5px 12px", fontSize: 12 }} onClick={() => exportAllChaptersAsPDF(currentStory.title, currentStory.chapters)} title="Export all chapters as PDF">PDF</button>
-            )}
-            {section !== "Search" && section !== "Home" && section !== "Map" && section !== "Timeline" && <button style={styles.plusBtn} onClick={() => setModal(addActions[section])}>+</button>}
           </div>
+          {/* row 2: view toggles */}
+          {(section === "Chapters" || section === "Timeline") && (
+            <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center" }}>
+              <ViewToggle views={[{ label: "List", sec: "Chapters" }, { label: "Timeline", sec: "Timeline" }]} />
+              {currentStory?.chapters?.length > 0 && (
+                <button style={{ background: "none", border: "none", color: "#555", padding: 0, cursor: "pointer", fontSize: 11, fontFamily: "'Fredoka', sans-serif" }} onClick={() => exportAllChaptersAsPDF(currentStory.title, currentStory.chapters)}>Export PDF</button>
+              )}
+            </div>
+          )}
+          {(section === "Outline" || section === "OutlineTimeline") && (
+            <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center" }}>
+              <ViewToggle views={[{ label: "List", sec: "Outline" }, { label: "Timeline", sec: "OutlineTimeline" }]} />
+            </div>
+          )}
+          {(section === "Relationships" || section === "Map") && (
+            <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center" }}>
+              <ViewToggle views={[{ label: "List", sec: "Relationships" }, { label: "Map", sec: "Map" }]} />
+            </div>
+          )}
+          {FOLDER_SECTIONS.includes(section) && (
+            <div style={{ display: "flex", marginTop: 8, alignItems: "center" }}>
+              <button title="Add a folder" onClick={() => addItemFolder(section, null)}
+                style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "1px solid #2a2a2a", color: "#888", padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "'Fredoka', sans-serif", letterSpacing: "0.04em" }}>
+                <FolderIcon /> New Folder
+              </button>
+            </div>
+          )}
         </div>
         {section === "Home" ? (
           <div style={{ overflowY: "auto", flex: 1 }}>
@@ -1890,6 +2068,24 @@ export default function StoryOrganizer() {
                 placeholder="Search everything…"
                 style={{ ...styles.formInput, fontSize: 13 }}
               />
+              <div style={{ display: "flex", gap: 4, marginTop: 8, flexWrap: "wrap" }}>
+                {["All", "Characters", "Relationships", "Chapters", "Notes"].map(t => (
+                  <button key={t} onClick={() => setSearchTypeFilter(t)}
+                    style={{ background: searchTypeFilter === t ? "#ff1d8e" : "none", color: searchTypeFilter === t ? "#0d0d0d" : "#666", border: `1px solid ${searchTypeFilter === t ? "#ff1d8e" : "#333"}`, borderRadius: 12, padding: "2px 9px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>
+                    {t === "Relationships" ? "Rels" : t}
+                  </button>
+                ))}
+              </div>
+              {(searchTypeFilter === "All" || searchTypeFilter === "Chapters") && (
+                <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+                  {[null, "Draft", "Revising", "Final"].map(st => (
+                    <button key={st || "any"} onClick={() => setSearchStatusFilter(st)}
+                      style={{ background: searchStatusFilter === st ? "#0a203a" : "none", color: searchStatusFilter === st ? "#7dd3fc" : "#555", border: `1px solid ${searchStatusFilter === st ? "#7dd3fc" : "#2a2a2a"}`, borderRadius: 12, padding: "2px 9px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>
+                      {st || "Any status"}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div style={{ overflowY: "auto", flex: 1 }}>
               {!searchQuery.trim() && (
@@ -1922,6 +2118,32 @@ export default function StoryOrganizer() {
               })()}
             </div>
           </div>
+        ) : section === "Trash" ? (
+          <div style={{ overflowY: "auto", flex: 1 }}>
+            {(currentStory.trash || []).length === 0 ? (
+              <div style={{ padding: "24px 16px", color: "#555", fontStyle: "italic", fontSize: 13 }}>Trash is empty.</div>
+            ) : (
+              <>
+                <div style={{ padding: "10px 16px", borderBottom: "1px solid #1e1e1e" }}>
+                  <button style={{ background: "none", border: "2px solid #ff1d8e", color: "#ff1d8e", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, width: "100%", fontFamily: "'Fredoka', sans-serif" }} onClick={emptyTrash}>Empty Trash</button>
+                </div>
+                {[...(currentStory.trash || [])].reverse().map(t => {
+                  const label = t.item.name || t.item.title || (t.collection === "relationships" ? `${charMap[t.item.charA]?.name || "?"} & ${charMap[t.item.charB]?.name || "?"}` : "Untitled");
+                  const daysLeft = Math.max(0, TRASH_RETENTION_DAYS - Math.floor((Date.now() - t.deletedAt) / 86400000));
+                  return (
+                    <div key={t.item.id} style={{ ...styles.listItem, cursor: "default", gap: 6 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 500, fontSize: 14, color: "#b0a090", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+                        <div style={{ fontSize: 10, color: "#555", textTransform: "capitalize" }}>{t.collection.replace(/s$/, "")} · {daysLeft}d left</div>
+                      </div>
+                      <button onClick={() => restoreTrashItem(t.item.id)} style={{ background: "none", border: "1px solid #7dd3fc", color: "#7dd3fc", padding: "2px 10px", borderRadius: 4, cursor: "pointer", fontSize: 11, fontFamily: "'Fredoka', sans-serif", flexShrink: 0 }}>Restore</button>
+                      <button onClick={() => purgeTrashItem(t.item.id)} title="Delete forever" style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 14, flexShrink: 0, padding: "0 2px" }}>×</button>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
         ) : (
           <>
             {/* per-section search */}
@@ -1933,58 +2155,160 @@ export default function StoryOrganizer() {
                 style={{ ...styles.formInput, fontSize: 12, padding: "5px 10px" }}
               />
             </div>
-            <div style={{ overflowY: "auto", flex: 1 }}>
+            <div style={{ overflowY: "auto", flex: 1 }}
+              onDragOver={e => { if (FOLDER_SECTIONS.includes(section) && (draggingId || draggingFolderId)) e.preventDefault(); }}
+              onDrop={e => {
+                if (!FOLDER_SECTIONS.includes(section)) return;
+                e.preventDefault();
+                const k = { Characters: "characters", Notes: "notes", Outline: "outlines" }[section];
+                const dId = draggingFolderId || draggingId;
+                if (dId) moveNode(dId, draggingFolderId ? "folder" : "item", null, null, "end", k);
+                setDraggingId(null); setDraggingFolderId(null); setDragOverId(null); setDragOverFolderId(null); setDropZone(null);
+              }}
+            >
               {(() => {
+                const SECTION_KEY = { Characters: "characters", Chapters: "chapters", Notes: "notes", Outline: "outlines", Relationships: "relationships", Timeline: "chapters", OutlineTimeline: "outlines" };
+                const collKey = SECTION_KEY[section];
                 const q = listSearchQuery.trim().toLowerCase();
-                const filtered = q ? items.filter(item => {
+                const matches = item => {
                   if (section === "Relationships") {
                     return (charMap[item.charA]?.name || "").toLowerCase().includes(q) ||
                            (charMap[item.charB]?.name || "").toLowerCase().includes(q);
                   }
                   return (item.name || item.title || "").toLowerCase().includes(q);
-                }) : items;
+                };
+                const sortPinned = arr => [...arr].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
 
-                if (filtered.length === 0) return (
-                  <div style={{ padding: "24px 16px", color: "#555", fontStyle: "italic", fontSize: 13 }}>
-                    {q ? `No results for "${listSearchQuery}".` : "Nothing here yet."}
-                  </div>
-                );
+                const clearDrag = () => { setDraggingId(null); setDraggingFolderId(null); setDragOverId(null); setDragOverFolderId(null); setDropZone(null); };
+                const dragId = () => draggingFolderId || draggingId;
+                const dragKind = () => draggingFolderId ? "folder" : "item";
 
-                const SECTION_KEY = { Characters: "characters", Chapters: "chapters", Notes: "notes", Outline: "outlines", Relationships: "relationships", Timeline: "chapters" };
-                const sorted = [...filtered].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
-                return sorted.map(item => {
+                // Single item row. In treeMode (Characters/Notes/Outline) it uses
+                // before/after drop zones + order; otherwise plain array reorder.
+                const itemRow = (item, depth, treeMode = false) => {
                   const isActive  = selected === item.id;
                   const isDragging = draggingId === item.id;
-                  const isOver    = dragOverId === item.id && draggingId !== item.id;
+                  const dz = treeMode && dropZone?.id === item.id ? dropZone.zone : null;
+                  const isOver = !treeMode && dragOverId === item.id && draggingId !== item.id;
                   let label = item.name || item.title || "Untitled";
                   if (section === "Relationships") {
                     const cA = charMap[item.charA], cB = charMap[item.charB];
                     label = `${cA?.name || "?"} & ${cB?.name || "?"}`;
                   }
+                  const handlers = treeMode ? {
+                    onDragOver: e => { e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setDropZone({ id: item.id, zone: (e.clientY - r.top) < r.height / 2 ? "before" : "after" }); },
+                    onDrop: e => { e.preventDefault(); e.stopPropagation(); const z = dropZone?.id === item.id ? dropZone.zone : "after"; if (dragId()) moveNode(dragId(), dragKind(), item.id, "item", z, collKey); clearDrag(); },
+                  } : {
+                    onDragOver: e => { e.preventDefault(); e.stopPropagation(); setDragOverId(item.id); },
+                    onDrop: e => { e.preventDefault(); e.stopPropagation(); reorderItems(draggingId, item.id); clearDrag(); },
+                  };
                   return (
                     <div
                       key={item.id}
                       draggable
-                      onDragStart={() => setDraggingId(item.id)}
-                      onDragOver={e => { e.preventDefault(); setDragOverId(item.id); }}
-                      onDrop={e => { e.preventDefault(); reorderItems(draggingId, item.id); setDraggingId(null); setDragOverId(null); }}
-                      onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}
+                      onDragStart={e => { e.stopPropagation(); setDraggingId(item.id); setDraggingFolderId(null); }}
+                      {...handlers}
+                      onDragEnd={clearDrag}
                       onClick={e => { if (e.ctrlKey || e.metaKey) { openNewTab(section, item.id); } else { setSelected(item.id); setCharTab("detail"); } }}
                       style={{
                         ...styles.listItem,
                         ...(isActive ? styles.listItemActive : {}),
                         opacity: isDragging ? 0.4 : 1,
-                        borderTop: isOver ? "2px solid #ff1d8e" : undefined,
+                        borderTop: (isOver || dz === "before") ? "2px solid #ff1d8e" : "2px solid transparent",
+                        ...(dz === "after" ? { borderBottom: "2px solid #ff1d8e" } : {}),
                         cursor: "grab",
+                        position: "relative",
+                        paddingLeft: 16 + depth * 18,
                       }}
                     >
                       {section === "Characters" && <div style={{ width: 8, height: 8, borderRadius: "50%", background: item.color || "#888", marginRight: 10, flexShrink: 0 }} />}
+                      {(section === "Chapters" || section === "Timeline") && item.status && <div title={item.status} style={{ width: 8, height: 8, borderRadius: "50%", background: STATUS_COLOR[item.status] || "#555", marginRight: 10, flexShrink: 0 }} />}
                       <div style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: isActive ? 700 : 500, fontSize: 15, color: isActive ? "#7dd3fc" : "#b0a090", flex: 1 }}>{label}</div>
-                      {(section === "Chapters" || section === "Timeline") && item.status && <div style={{ width: 7, height: 7, borderRadius: "50%", background: STATUS_COLOR[item.status] || "#555", flexShrink: 0 }} />}
-                      <button onClick={e => { e.stopPropagation(); const k = SECTION_KEY[section]; if (k) updateField(k, item.id, "pinned", !item.pinned); }} style={{ background: "none", border: "none", color: item.pinned ? "#ff1d8e" : "#2a2a2a", cursor: "pointer", fontSize: 12, padding: "0 2px", flexShrink: 0, lineHeight: 1 }}>●</button>
+                      <button onClick={e => { e.stopPropagation(); if (collKey) updateField(collKey, item.id, "pinned", !item.pinned); }}
+                        style={{ position: "absolute", top: 3, right: 5, background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 1, display: "flex" }}>
+                        <PinIcon pinned={item.pinned} />
+                      </button>
                     </div>
                   );
-                });
+                };
+
+                // ── flat mode: while searching, or sections without folders ──
+                if (q || !FOLDER_SECTIONS.includes(section)) {
+                  const filtered = q ? items.filter(matches) : items;
+                  if (filtered.length === 0) return (
+                    <div style={{ padding: "24px 16px", color: "#555", fontStyle: "italic", fontSize: 13 }}>
+                      {q ? `No results for "${listSearchQuery}".` : "Nothing here yet."}
+                    </div>
+                  );
+                  return sortPinned(filtered).map(it => itemRow(it, 0));
+                }
+
+                // ── folder-tree mode (Characters / Notes / Outline) ──
+                const folders = itemFolders().filter(f => f.section === section);
+                const validIds = new Set(folders.map(f => f.id));
+                const containerOf = it => (it.folderId && validIds.has(it.folderId)) ? it.folderId : null;
+
+                if (items.length === 0 && folders.length === 0) return (
+                  <div style={{ padding: "24px 16px", color: "#555", fontStyle: "italic", fontSize: 13 }}>Nothing here yet.</div>
+                );
+
+                // Folders + items at one level: pinned items float to top, the rest
+                // (folders and unpinned items) interleave by their `order`.
+                const nodesUnder = container => {
+                  const fs = folders.filter(f => (f.parentId || null) === container).map(f => ({ kind: "folder", ref: f, order: f.order ?? 0 }));
+                  const its = items.filter(it => containerOf(it) === container).map(it => ({ kind: "item", ref: it, order: it.order ?? 0, pinned: !!it.pinned }));
+                  const pinned = its.filter(n => n.pinned).sort((a, b) => a.order - b.order);
+                  const rest = [...fs, ...its.filter(n => !n.pinned)].sort((a, b) => a.order - b.order);
+                  return [...pinned, ...rest];
+                };
+
+                const folderRow = (f, depth) => {
+                  const dz = dropZone?.id === f.id ? dropZone.zone : null;
+                  const count = items.filter(it => it.folderId === f.id).length;
+                  return (
+                    <div key={"row-" + f.id}
+                      draggable
+                      onDragStart={e => { e.stopPropagation(); setDraggingFolderId(f.id); setDraggingId(null); }}
+                      onDragOver={e => { e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); const y = e.clientY - r.top; setDropZone({ id: f.id, zone: y < r.height * 0.3 ? "before" : y > r.height * 0.7 ? "after" : "inside" }); }}
+                      onDrop={e => { e.preventDefault(); e.stopPropagation(); const z = dropZone?.id === f.id ? dropZone.zone : "inside"; if (dragId()) moveNode(dragId(), dragKind(), f.id, "folder", z, collKey); clearDrag(); }}
+                      onDragEnd={clearDrag}
+                      onClick={() => toggleItemFolder(f.id)}
+                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", paddingLeft: 12 + depth * 18, cursor: "pointer", borderBottom: dz === "after" ? "2px solid #ff1d8e" : "1px solid #1a1a1a", background: dz === "inside" ? "#2a1428" : "transparent", borderTop: dz === "before" ? "2px solid #ff1d8e" : "2px solid transparent", boxShadow: dz === "inside" ? "inset 0 0 0 2px #ff1d8e" : undefined }}
+                    >
+                      <span style={{ fontSize: 9, color: "#666", flexShrink: 0, width: 10 }}>{f.collapsed ? "▶" : "▼"}</span>
+                      <FolderIcon />
+                      {renamingItemFolderId === f.id ? (
+                        <input autoFocus defaultValue={f.name}
+                          onClick={e => e.stopPropagation()}
+                          onBlur={e => { renameItemFolder(f.id, e.target.value); setRenamingItemFolderId(null); }}
+                          onKeyDown={e => { if (e.key === "Enter") { renameItemFolder(f.id, e.target.value); setRenamingItemFolderId(null); } if (e.key === "Escape") setRenamingItemFolderId(null); }}
+                          style={{ ...styles.formInput, fontSize: 12, padding: "2px 6px", flex: 1 }} />
+                      ) : (
+                        <span onDoubleClick={e => { e.stopPropagation(); setRenamingItemFolderId(f.id); }}
+                          style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 700, color: "#c9b99a", fontSize: 13, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {f.name} {count > 0 && <span style={{ color: "#555", fontWeight: 400 }}>({count})</span>}
+                        </span>
+                      )}
+                      <button title="New subfolder" onClick={e => { e.stopPropagation(); addItemFolder(section, f.id); }}
+                        style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>+</button>
+                      <button title="Rename" onClick={e => { e.stopPropagation(); setRenamingItemFolderId(f.id); }}
+                        style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>✎</button>
+                      <button title="Delete folder (keeps items)" onClick={e => { e.stopPropagation(); deleteItemFolder(f.id, collKey); }}
+                        style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
+                    </div>
+                  );
+                };
+
+                const renderLevel = (container, depth) => nodesUnder(container).map(n =>
+                  n.kind === "folder" ? (
+                    <div key={n.ref.id}>
+                      {folderRow(n.ref, depth)}
+                      {!n.ref.collapsed && renderLevel(n.ref.id, depth + 1)}
+                    </div>
+                  ) : itemRow(n.ref, depth, true)
+                );
+
+                return renderLevel(null, 0);
               })()}
             </div>
           </>
@@ -2024,7 +2348,7 @@ export default function StoryOrganizer() {
             v2:     { gridTemplateColumns: '1fr', gridTemplateRows: '1fr 1fr' },
             quad:   { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' },
           }[paneLayout] || {};
-          const isFullDetail = (sec, sel) => ((['Chapters','Timeline','Notes','Outline'].includes(sec) && sel) || sec === 'Home' || sec === 'Timeline' || sec === 'Map');
+          const isFullDetail = (sec, sel) => ((['Chapters','Timeline','Notes','Outline','Characters'].includes(sec) && sel) || sec === 'Home' || sec === 'Timeline' || sec === 'OutlineTimeline' || sec === 'Map');
           return (
             <div style={{ flex: 1, display: "grid", overflow: "hidden", ...gridStyle }}>
               {positions.map(pos => {
@@ -2048,16 +2372,13 @@ export default function StoryOrganizer() {
                         <span style={{ fontSize: 11, color: isActive ? "#c9b99a" : "#444", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, fontFamily: "'Fredoka', sans-serif" }}>{paneLabel(pos)}</span>
                       </div>
                     )}
-                    {/* pane content */}
-                    {isActive ? (
-                      <div style={{ ...styles.detailPanel, flex: 1, ...(paneFullDetail ? { padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" } : {}) }}>
-                        {renderDetail()}
-                      </div>
-                    ) : (
-                      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", cursor: "default" }} onClick={() => activatePane(pos)}>
-                        {renderReadOnly(pos)}
-                      </div>
-                    )}
+                    {/* pane content — every pane is the full editable view */}
+                    <div
+                      onMouseDown={() => { if (!isActive) activatePane(pos); }}
+                      style={{ ...styles.detailPanel, flex: 1, ...(paneFullDetail ? { padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" } : {}) }}
+                    >
+                      {renderDetail(paneSec, paneSel)}
+                    </div>
                   </div>
                 );
               })}
@@ -2288,366 +2609,28 @@ export default function StoryOrganizer() {
         );
       })()}
 
-      {/* close-app backup prompt */}
-      {showCloseModal && (
-        <div style={{ ...styles.overlay, zIndex: 9999 }}>
-          <div style={{ ...styles.modalBox, textAlign: "center", maxWidth: 360 }}>
-            <h3 style={{ fontFamily: "'Bangers', cursive", fontSize: 30, letterSpacing: "0.06em", color: "#ff1d8e", marginBottom: 12, borderBottom: "2px dashed #3a0a2e", paddingBottom: 12 }}>
-              Before You Go
-            </h3>
-            <p style={{ fontSize: 14, color: "#c9b99a", marginBottom: 24, lineHeight: 1.6 }}>
-              Save a backup before closing?
-            </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <button
-                style={{ background: "#7dd3fc", border: "2px solid #3a6a8a", color: "#0d0d0d", padding: "10px 16px", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }}
-                onClick={async () => { await exportBackup(); window.electronAPI.confirmClose(); }}
-              >
-                Save Backup &amp; Close
-              </button>
-              <button
-                style={{ background: "none", border: "1px solid #333", color: "#888", padding: "8px 16px", borderRadius: 6, cursor: "pointer", fontSize: 13, fontFamily: "'Fredoka', sans-serif" }}
-                onClick={() => window.electronAPI.confirmClose()}
-              >
-                Close Without Saving
-              </button>
-              <button
-                style={{ background: "none", border: "none", color: "#555", padding: "4px", cursor: "pointer", fontSize: 12, fontFamily: "'Fredoka', sans-serif" }}
-                onClick={() => setShowCloseModal(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── sub-components ─────────────────────────────────────────────────────────────
-
-const LINK_RE = /\[\[([^\|\]]+)\|([^\|\]]+)\|([^\]]+)\]\]/g;
-
-function parseAndRenderLinks(text, onNavigate) {
-  const parts = [];
-  let last = 0, key = 0;
-  const re = new RegExp(LINK_RE.source, 'g');
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) parts.push(<span key={key++}>{text.slice(last, m.index)}</span>);
-    const [, name, sec, id] = m;
-    parts.push(
-      <button key={key++} onClick={() => onNavigate?.(sec, id)}
-        style={{ background: "#0d1428", border: "2px solid #7dd3fc", color: "#7dd3fc", padding: "1px 9px", borderRadius: 5, cursor: "pointer", fontSize: 13, fontFamily: "'Fredoka', sans-serif", fontWeight: 600, margin: "0 3px", verticalAlign: "middle" }}>
-        🔗 {name}
-      </button>
-    );
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) parts.push(<span key={key++}>{text.slice(last)}</span>);
-  return parts;
-}
-
-function ChapterEditor({ content, onSave, requestLink, onNavigate }) {
-  const [v, setV] = useState(content);
-  const [preview, setPreview] = useState(false);
-  const taRef = useRef(null);
-  useEffect(() => { setV(content); }, [content]);
-
-  const hasLinks = LINK_RE.test(v);
-  LINK_RE.lastIndex = 0;
-  const wordCount = v.trim() ? v.trim().split(/\s+/).length : 0;
-
-  function handleInsertLink() {
-    const pos = taRef.current?.selectionStart ?? v.length;
-    requestLink(linkText => {
-      const next = v.slice(0, pos) + linkText + v.slice(pos);
-      setV(next);
-      onSave(next);
-      setTimeout(() => {
-        taRef.current?.focus();
-        const end = pos + linkText.length;
-        taRef.current?.setSelectionRange(end, end);
-      }, 30);
-    });
-  }
-
-  const showToolbar = requestLink || hasLinks;
-
-  return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      {showToolbar && (
-        <div style={{ display: "flex", gap: 8, padding: "5px 10px", borderBottom: "1px solid #1e1e1e", flexShrink: 0 }}>
-          {requestLink && !preview && (
-            <button onClick={handleInsertLink}
-              style={{ background: "none", border: "1px solid #3a3a3a", color: "#7dd3fc", padding: "2px 12px", borderRadius: 4, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }}>
-              🔗 Link
-            </button>
-          )}
-          <span style={{ fontSize: 11, color: "#444", marginLeft: "auto" }}>{wordCount.toLocaleString()} words</span>
-          {(hasLinks || preview) && (
-            <button onClick={() => setPreview(p => !p)}
-              style={{ background: preview ? "#7dd3fc22" : "none", border: "1px solid #3a3a3a", color: "#7dd3fc", padding: "2px 12px", borderRadius: 4, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" }}>
-              {preview ? "Edit" : "Preview"}
-            </button>
-          )}
-        </div>
-      )}
-      {preview ? (
-        <div style={{ flex: 1, overflow: "auto", padding: "20px 24px", background: "#111", border: "2px solid #2a2a2a", borderRadius: 10, color: "#c9b99a", fontSize: 15, fontFamily: "'Fredoka', sans-serif", lineHeight: 1.8, whiteSpace: "pre-wrap", boxSizing: "border-box" }}>
-          {parseAndRenderLinks(v, onNavigate)}
-        </div>
-      ) : (
-        <textarea
-          ref={taRef}
-          value={v}
-          onChange={e => setV(e.target.value)}
-          onBlur={() => onSave(v)}
-          placeholder="Start writing…"
-          style={{ flex: 1, background: "#111", border: "2px solid #2a2a2a", borderRadius: 10, padding: "20px 24px", color: "#c9b99a", fontSize: 15, fontFamily: "'Fredoka', sans-serif", lineHeight: 1.8, resize: "none", outline: "none", width: "100%", boxSizing: "border-box" }}
-        />
-      )}
-    </div>
-  );
-}
-
-function EditableText({ val, style, onEdit }) {
-  const [editing, setEditing] = useState(false);
-  const [v, setV] = useState(val);
-  if (editing) return (
-    <input autoFocus value={v} onChange={e => setV(e.target.value)}
-      onBlur={() => { onEdit(v); setEditing(false); }}
-      onKeyDown={e => { if (e.key === "Enter") { onEdit(v); setEditing(false); } }}
-      style={{ ...style, background: "#1a1a1a", border: "1px solid #444", borderRadius: 4, padding: "2px 6px", color: "#e8d9c0", width: "100%", outline: "none" }} />
-  );
-  return <div style={{ ...style, cursor: "text" }} onClick={() => { setV(val); setEditing(true); }} title="Click to edit">{val}</div>;
-}
-
-function EditableArea({ val, style, onEdit }) {
-  const [editing, setEditing] = useState(false);
-  const [v, setV] = useState(val);
-  if (editing) return (
-    <textarea autoFocus value={v} onChange={e => setV(e.target.value)}
-      onBlur={() => { onEdit(v); setEditing(false); }}
-      style={{ ...style, background: "#1a1a1a", border: "1px solid #444", borderRadius: 4, padding: "8px", color: "#c9b99a", width: "100%", resize: "vertical", outline: "none", fontFamily: "inherit", lineHeight: 1.6 }} />
-  );
-  return <div style={{ ...style, cursor: "text", whiteSpace: "pre-wrap" }} onClick={() => { setV(val); setEditing(true); }} title="Click to edit">{val || <span style={{ color: "#555", fontStyle: "italic" }}>Click to add…</span>}</div>;
-}
-
-function CharBadge({ c }) {
-  if (!c) return <span style={{ color: "#555" }}>Unknown</span>;
-  return <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-    <div style={{ width: 10, height: 10, borderRadius: "50%", background: c.color }} />
-    <span style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 600, color: "#7dd3fc", fontSize: 16 }}>{c.name}</span>
-  </span>;
-}
-
-function Label({ children }) {
-  return <div style={{ fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "#666", marginBottom: 6 }}>{children}</div>;
-}
-
-function FormField({ label, value, onChange }) {
-  return <div style={{ marginBottom: 12 }}>
-    <label style={styles.formLabel}>{label}</label>
-    <input value={value} onChange={e => onChange(e.target.value)} style={styles.formInput} />
-  </div>;
-}
-
-function FormTextarea({ label, value, onChange }) {
-  return <div style={{ marginBottom: 12 }}>
-    <label style={styles.formLabel}>{label}</label>
-    <textarea value={value} onChange={e => onChange(e.target.value)} rows={4} style={{ ...styles.formInput, resize: "vertical" }} />
-  </div>;
-}
-
-function OutlineEditor({ outline, charId, onUpdate, onAdd, onReorder, onRequestDelete }) {
-  const dragFrom = useRef(null);
-  const [dragOverIdx, setDragOverIdx] = useState(null);
-
-  return (
-    <div>
-      {outline.length === 0 && (
-        <div style={{ color: "#555", fontStyle: "italic", fontSize: 14, marginBottom: 24 }}>No blocks yet — add one below.</div>
-      )}
-      {outline.map((block, idx) => (
-        <div
-          key={block.id}
-          draggable
-          onDragStart={e => {
-            dragFrom.current = idx;
-            e.dataTransfer.effectAllowed = "move";
-          }}
-          onDragOver={e => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-            if (dragOverIdx !== idx) setDragOverIdx(idx);
-          }}
-          onDragLeave={() => setDragOverIdx(null)}
-          onDrop={e => {
-            e.preventDefault();
-            const from = dragFrom.current;
-            setDragOverIdx(null);
-            dragFrom.current = null;
-            if (from === null || from === idx) return;
-            onReorder(charId, from, idx);
-          }}
-          onDragEnd={() => { setDragOverIdx(null); dragFrom.current = null; }}
-          style={{
-            background: "#161616",
-            border: `2px solid ${dragOverIdx === idx ? "#ff1d8e" : "#2a2a2a"}`,
-            borderRadius: 10,
-            padding: "12px 14px 12px",
-            marginBottom: 12,
-            boxShadow: dragOverIdx === idx ? "0 0 0 2px #ff1d8e40" : "2px 2px 0 #0d0d0d",
-            transition: "border-color 0.1s, box-shadow 0.1s",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div
-              title="Drag to reorder"
-              style={{ cursor: "grab", color: "#444", fontSize: 18, lineHeight: 1, userSelect: "none", paddingRight: 8 }}
-            >⠿</div>
-            <button
-              onClick={() => onRequestDelete(block)}
-              style={{ background: "#1a0828", border: "2px solid #ff1d8e", color: "#ff1d8e", width: 28, height: 28, borderRadius: 6, cursor: "pointer", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}
-            >×</button>
-          </div>
-          <EditableArea
-            val={block.text}
-            style={{ ...styles.detailBody, minHeight: 80, marginBottom: 0 }}
-            onEdit={v => onUpdate(charId, block.id, v)}
-          />
-        </div>
-      ))}
-      <button style={{ ...styles.addBtn, marginTop: 8 }} onClick={() => onAdd(charId)}>+ Add Block</button>
-    </div>
-  );
-}
-
-function ColorFieldWithHistory({ label, value, prevValue, onEdit }) {
-  const current = value || "#888888";
-  const showPrev = prevValue && prevValue !== current;
-  return (
-    <div style={{ marginBottom: 20 }}>
-      <Label>{label}</Label>
-      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        <input
-          type="color"
-          value={current}
-          onChange={e => onEdit(e.target.value)}
-          style={{ width: 44, height: 36, padding: 0, cursor: "pointer", background: "none", border: "none" }}
-        />
-        <div style={{ width: 32, height: 32, borderRadius: 8, background: current, border: "2px solid #333", boxShadow: "2px 2px 0 #0a0a0a", flexShrink: 0 }} title="Current" />
-        {showPrev && <>
-          <span style={{ color: "#555", fontSize: 18, fontWeight: 700, lineHeight: 1 }}>←</span>
-          <div style={{ width: 24, height: 24, borderRadius: 6, background: prevValue, border: "1px solid #444", opacity: 0.55, flexShrink: 0 }} title="Previous colour" />
-        </>}
-        <span style={{ fontSize: 11, color: "#666", fontFamily: "monospace", letterSpacing: "0.04em" }}>{current}</span>
-      </div>
-    </div>
-  );
-}
-
-function HairstyleInput({ hairstyles, onEdit }) {
-  const [draft, setDraft] = useState("");
-
-  function confirm() {
-    const trimmed = draft.trim();
-    if (!trimmed || hairstyles.includes(trimmed)) return;
-    onEdit([...hairstyles, trimmed]);
-    setDraft("");
-  }
-
-  return (
-    <div style={{ marginBottom: 20 }}>
-      {hairstyles.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-          {hairstyles.map(h => (
-            <div key={h} style={{ display: "flex", alignItems: "center", gap: 6, background: "#1a1a1a", border: "2px solid #2a2a2a", borderRadius: 20, padding: "4px 8px 4px 12px" }}>
-              <span style={{ fontSize: 13, color: "#c9b99a", fontWeight: 500, fontFamily: "'Fredoka', sans-serif" }}>{h}</span>
-              <button onClick={() => onEdit(hairstyles.filter(x => x !== h))} style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "0 2px", fontWeight: 700 }}>×</button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); confirm(); } }}
-          placeholder="Type a hairstyle and press Enter…"
-          style={{ ...styles.formInput, flex: 1 }}
-        />
-        <button onClick={confirm} style={{ ...styles.addBtn, padding: "8px 16px" }}>Add</button>
-      </div>
-    </div>
-  );
-}
-
-function TraitSelector({ traits, onEdit }) {
-  function toggle(trait) {
-    const next = traits.includes(trait)
-      ? traits.filter(t => t !== trait)
-      : [...traits, trait];
-    onEdit(next);
-  }
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 28 }}>
-      {CHARACTER_TRAITS.map(trait => {
-        const active = traits.includes(trait);
+      {/* focus mode — fullscreen distraction-free editor (Esc to exit) */}
+      {focusChapterId && (() => {
+        const ch = currentStory.chapters.find(x => x.id === focusChapterId);
+        if (!ch) return null;
         return (
-          <button
-            key={trait}
-            onClick={() => toggle(trait)}
-            style={{
-              background: active ? "#ff1d8e" : "#1a1a1a",
-              border: `2px solid ${active ? "#ff1d8e" : "#2a2a2a"}`,
-              color: active ? "#0d0d0d" : "#777",
-              padding: "5px 13px",
-              borderRadius: 20,
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: active ? 700 : 500,
-              fontFamily: "'Fredoka', sans-serif",
-              boxShadow: active ? "2px 2px 0 #3a0a2e" : "none",
-              transition: "all 0.12s",
-            }}
-          >
-            {trait}
-          </button>
+          <div style={{ position: "fixed", inset: 0, background: "#0d0d0d", zIndex: 90, display: "flex", flexDirection: "column", alignItems: "center" }}>
+            <div style={{ width: "min(860px, 92vw)", display: "flex", alignItems: "center", gap: 12, padding: "18px 0 10px", flexShrink: 0 }}>
+              <span style={{ fontFamily: "'Bangers', cursive", fontSize: 26, color: "#ff1d8e", textShadow: "2px 2px 0 #3a0a2e", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ch.title || "Untitled"}</span>
+              <span style={{ fontSize: 11, color: "#444" }}>Esc to exit</span>
+              <button onClick={() => setFocusChapterId(null)} style={{ background: "none", border: "2px solid #2a2a2a", color: "#888", width: 30, height: 30, borderRadius: 6, cursor: "pointer", fontSize: 15, fontWeight: 700, flexShrink: 0 }}>✕</button>
+            </div>
+            <div style={{ width: "min(860px, 92vw)", flex: 1, display: "flex", flexDirection: "column", minHeight: 0, paddingBottom: 24 }}>
+              <ChapterEditor key={"focus-" + ch.id} content={ch.content}
+                requestLink={cb => { setLinkPicker({ onInsert: cb }); setLinkPickerQuery(""); setLinkPickerSection("Characters"); }}
+                onNavigate={(sec, id) => { setFocusChapterId(null); setSection(sec); setSelected(id); setCharTab("detail"); }}
+                onSave={v => updateField("chapters", ch.id, "content", v)} />
+            </div>
+          </div>
         );
-      })}
+      })()}
+
+      {renderCloseModal()}
     </div>
   );
 }
-
-// ── styles ─────────────────────────────────────────────────────────────────────
-const styles = {
-  root: { display: "flex", height: "100vh", background: "#111", fontFamily: "'Fredoka', sans-serif", color: "#c9b99a", overflow: "hidden" },
-  sidebar: { width: 200, background: "#0d0d0d", borderRight: "3px solid #2a2a2a", display: "flex", flexDirection: "column", padding: "24px 0", flexShrink: 0 },
-  brand: { fontFamily: "'Bangers', cursive", fontSize: 34, letterSpacing: "0.08em", color: "#ff1d8e", padding: "0 20px 20px", borderBottom: "3px dashed #3a0a2e", marginBottom: 18, textAlign: "center", textShadow: "3px 3px 0 #3a0a2e" },
-  navBtn: { background: "none", border: "none", textAlign: "left", padding: "12px 20px", cursor: "pointer", fontSize: 13, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "#666", fontFamily: "'Fredoka', sans-serif", transition: "color 0.2s, transform 0.15s" },
-  navActive: { color: "#ff1d8e", borderLeft: "4px solid #ff1d8e", background: "#280820" },
-  list: { width: 230, background: "#141414", borderRight: "3px solid #1e1e1e", display: "flex", flexDirection: "column", flexShrink: 0 },
-  listHeader: { padding: "20px 16px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px dashed #2a2a2a" },
-  listTitle: { fontFamily: "'Bangers', cursive", fontSize: 24, letterSpacing: "0.05em", color: "#7dd3fc", textShadow: "2px 2px 0 #0a203a" },
-  plusBtn: { background: "#ff1d8e", border: "2px solid #3a0a2e", color: "#0d0d0d", width: 32, height: 32, borderRadius: "50%", cursor: "pointer", fontSize: 20, fontWeight: 700, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "2px 2px 0 #3a0a2e", transition: "transform 0.1s" },
-  listItem: { display: "flex", alignItems: "center", padding: "14px 16px", cursor: "pointer", borderBottom: "2px solid #1a1a1a", transition: "background 0.15s, transform 0.1s" },
-  listItemActive: { background: "#0d1028", borderLeft: "4px solid #ff1d8e" },
-  detailPanel: { flex: 1, overflowY: "auto", padding: "32px 40px" },
-  detail: { maxWidth: 660 },
-  detailTitle: { fontFamily: "'Bangers', cursive", fontSize: 44, letterSpacing: "0.03em", color: "#ff1d8e", marginBottom: 20, textShadow: "3px 3px 0 #3a0a2e" },
-  detailSub: { fontSize: 13, color: "#888", marginBottom: 20, letterSpacing: "0.05em" },
-  detailBody: { fontSize: 15, color: "#c9b99a", lineHeight: 1.7, marginBottom: 28, minHeight: 60, fontWeight: 400 },
-  relCard: { background: "#0a1428", border: "2px solid #1a2840", borderRadius: 12, padding: "14px 16px", marginBottom: 14, boxShadow: "3px 3px 0 #0d0d0d" },
-  empty: { color: "#555", fontStyle: "italic", fontSize: 15, marginTop: 48, fontWeight: 500 },
-  deleteBtn: { background: "#1a0a2e", border: "2px solid #ff1d8e", color: "#ff1d8e", padding: "10px 20px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, letterSpacing: "0.05em", marginTop: 16, boxShadow: "3px 3px 0 #3a0a2e", fontFamily: "'Fredoka', sans-serif" },
-  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 },
-  modalBox: { background: "#161616", border: "3px solid #3a0a2e", borderRadius: 16, padding: 28, width: 460, maxWidth: "90vw", maxHeight: "90vh", overflowY: "auto", boxShadow: "6px 6px 0 rgba(255,29,142,0.2)" },
-  formLabel: { display: "block", fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "#888", marginBottom: 6 },
-  formInput: { width: "100%", background: "#0d0d0d", border: "2px solid #333", borderRadius: 8, padding: "10px 12px", color: "#7dd3fc", fontSize: 15, fontFamily: "'Fredoka', sans-serif", fontWeight: 500, outline: "none", boxSizing: "border-box" },
-  select: { width: "100%", background: "#0d0d0d", border: "2px solid #333", borderRadius: 8, padding: "10px 12px", color: "#7dd3fc", fontSize: 15, fontFamily: "'Fredoka', sans-serif", fontWeight: 500, outline: "none", boxSizing: "border-box" },
-  addBtn: { background: "#ff1d8e", border: "2px solid #3a0a2e", color: "#0d0d0d", padding: "10px 22px", borderRadius: 10, cursor: "pointer", fontSize: 15, fontWeight: 700, letterSpacing: "0.05em", fontFamily: "'Fredoka', sans-serif", boxShadow: "3px 3px 0 #3a0a2e" },
-  pdfBtn: { background: "#0a203a", border: "2px solid #7dd3fc", color: "#7dd3fc", padding: "8px 18px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, letterSpacing: "0.05em", fontFamily: "'Fredoka', sans-serif", boxShadow: "2px 2px 0 #0a1428", marginTop: 16 },
-};

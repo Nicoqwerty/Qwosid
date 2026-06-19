@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Packaged app / build output (downloaders build their own)
+release/
+
+# Local Claude Code config
+.claude/
+
+# Personal dev launcher (hardcoded machine path)
+Qwosid.bat
