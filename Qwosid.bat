@@ -1,6 +1,26 @@
 @echo off
-REM Run from wherever this .bat lives, so it works on any machine
+REM Launches the Qwosid desktop (Electron) app. Runs from wherever this .bat
+REM lives, so it works on any machine.
 cd /d "%~dp0"
-start /b cmd /c "npm run dev > nul 2>&1"
-timeout /t 2 /nobreak > nul
-start msedge --app=http://localhost:5173 --window-size=1400,900 --no-first-run
+
+REM If a packaged build already exists, launch it directly (instant, no console).
+if exist "release\win-unpacked\Qwosid.exe" (
+  start "" "release\win-unpacked\Qwosid.exe"
+  exit /b
+)
+
+REM First-time / source checkout: install deps, build the UI, run Electron.
+if not exist "node_modules\" (
+  echo Installing dependencies, this only happens once...
+  call npm install
+)
+echo Building Qwosid...
+call npm run build
+if errorlevel 1 (
+  echo Build failed - see the messages above.
+  pause
+  exit /b 1
+)
+echo Starting Qwosid...
+start "" cmd /c "npx electron ."
+exit /b
