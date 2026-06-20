@@ -2,6 +2,9 @@
   "name": "qwosid",
   "private": true,
   "version": "1.0.0",
+  "description": "A desktop story organiser for writers — characters, chapters, outlines, relationships, and screenplay PDF export.",
+  "author": "Nicolas Giammarresi",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "dev": "vite",
@@ -27,7 +30,8 @@
     ],
     "win": {
       "target": "portable",
-      "icon": "build/Qicon image256.ico"
+      "icon": "build/icon.ico",
+      "artifactName": "Qwosid.exe"
     },
     "directories": {
       "output": "release"
