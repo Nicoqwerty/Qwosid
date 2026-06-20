@@ -62,8 +62,9 @@ Other scripts:
 
 ## Releasing a new version
 1. Bump `version` in `package.json`.
-2. `npm run dist` → produces `release/Qwosid.exe`.
-3. Create a new GitHub Release and attach that exe (keep the asset named `Qwosid.exe` so the download link above keeps working).
+2. Run **`npm run release`** — this builds the portable `Qwosid.exe` and publishes it to a GitHub Release (tag `v<version>`) in one step.
+
+It reuses the GitHub token git already cached (from your last `git push`); if that isn't available, set a `GITHUB_TOKEN` env var with `repo` scope. Re-running for the same version just replaces the uploaded exe, so the [latest-download link](https://github.com/Nicoqwerty/Qwosid/releases/latest/download/Qwosid.exe) always points at the newest build.
 
 ---
 

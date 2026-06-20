@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "launch": "npm run build && electron-builder --win --dir && node flip-fuses.mjs && start release\\win-unpacked\\Qwosid.exe",
-    "dist": "npm run build && electron-builder --win portable && node flip-fuses.mjs"
+    "dist": "npm run build && electron-builder --win portable && node flip-fuses.mjs",
+    "release": "npm run dist && node release.mjs"
   },
   "build": {
     "appId": "com.qwosid.app",
