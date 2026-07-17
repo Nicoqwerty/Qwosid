@@ -46,8 +46,8 @@ export default class ErrorBoundary extends Component {
     if (!this.state.error) return this.props.children;
     const btn = { padding: "10px 22px", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700, fontFamily: "'Fredoka', sans-serif" };
     return (
-      <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#111", color: "#c9b99a", fontFamily: "'Fredoka', sans-serif", padding: 24, textAlign: "center" }}>
-        <div style={{ fontFamily: "'Bangers', cursive", fontSize: 48, color: "#ff1d8e", textShadow: "3px 3px 0 #3a0a2e", marginBottom: 12 }}>Oops!</div>
+      <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "var(--c-111)", color: "var(--c-c9b99a)", fontFamily: "'Fredoka', sans-serif", padding: 24, textAlign: "center" }}>
+        <div style={{ fontFamily: "'Bangers', cursive", fontSize: 48, color: "var(--c-ff1d8e)", textShadow: "3px 3px 0 var(--c-3a0a2e)", marginBottom: 12 }}>Oops!</div>
         <div style={{ fontSize: 16, marginBottom: 8 }}>Qwosid hit an unexpected error.</div>
         <div style={{ fontSize: 14, color: "#888", marginBottom: 24, maxWidth: 520 }}>
           Your stories are safe — they're saved on disk, not in this window.
@@ -57,8 +57,8 @@ export default class ErrorBoundary extends Component {
           {String(this.state.error?.message || this.state.error)}
         </div>
         <div style={{ display: "flex", gap: 12 }}>
-          <button style={{ ...btn, background: "none", border: "2px solid #7dd3fc", color: "#7dd3fc" }} onClick={this.exportData}>Save Backup</button>
-          <button style={{ ...btn, background: "#ff1d8e", border: "2px solid #3a0a2e", color: "#0d0d0d" }} onClick={() => window.location.reload()}>Reload App</button>
+          <button style={{ ...btn, background: "none", border: "2px solid var(--c-7dd3fc)", color: "var(--c-7dd3fc)" }} onClick={this.exportData}>Save Backup</button>
+          <button style={{ ...btn, background: "var(--c-ff1d8e)", border: "2px solid var(--c-3a0a2e)", color: "var(--c-0d0d0d)" }} onClick={() => window.location.reload()}>Reload App</button>
         </div>
       </div>
     );

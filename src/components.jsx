@@ -50,7 +50,7 @@ export function parseAndRenderLinks(text, onNavigate) {
     const [, name, sec, id] = m;
     parts.push(
       <button key={key++} onClick={() => onNavigate?.(sec, id)}
-        style={{ background: "#0d1428", border: "2px solid #7dd3fc", color: "#7dd3fc", padding: "1px 9px", borderRadius: 5, cursor: "pointer", fontSize: 13, fontFamily: "'Fredoka', sans-serif", fontWeight: 600, margin: "0 3px", verticalAlign: "middle" }}>
+        style={{ background: "var(--c-0d1428)", border: "2px solid var(--c-7dd3fc)", color: "var(--c-7dd3fc)", padding: "1px 9px", borderRadius: 5, cursor: "pointer", fontSize: 13, fontFamily: "'Fredoka', sans-serif", fontWeight: 600, margin: "0 3px", verticalAlign: "middle" }}>
         🔗 {name}
       </button>
     );
@@ -65,17 +65,17 @@ export function renderRichPreview(html, onNavigate) {
   const processed = (html || '')
     .replace(/\[\[([^|\]]+)\|([^|\]]+)\|([^\]]+)\]\]/g,
       (_, name, sec, id) =>
-        `<button data-sec="${sec}" data-id="${id}" style="background:#0d1428;border:2px solid #7dd3fc;color:#7dd3fc;padding:1px 9px;border-radius:5px;cursor:pointer;font-size:13px;font-family:'Fredoka',sans-serif;font-weight:600;margin:0 3px;vertical-align:middle">🔗 ${name}</button>`
+        `<button data-sec="${sec}" data-id="${id}" style="background:var(--c-0d1428);border:2px solid var(--c-7dd3fc);color:var(--c-7dd3fc);padding:1px 9px;border-radius:5px;cursor:pointer;font-size:13px;font-family:'Fredoka',sans-serif;font-weight:600;margin:0 3px;vertical-align:middle">🔗 ${name}</button>`
     );
   return (
-    <div style={{ flex: 1, overflow: "auto", padding: "20px 24px", background: "#111", border: "2px solid #2a2a2a", borderRadius: 10, color: "#c9b99a", fontSize: 15, fontFamily: "'Fredoka', sans-serif", lineHeight: 1.8, boxSizing: "border-box" }}
+    <div style={{ flex: 1, overflow: "auto", padding: "20px 24px", background: "var(--c-111)", border: "2px solid var(--c-2a2a2a)", borderRadius: 10, color: "var(--c-c9b99a)", fontSize: 15, fontFamily: "'Fredoka', sans-serif", lineHeight: 1.8, boxSizing: "border-box" }}
       dangerouslySetInnerHTML={{ __html: processed }}
       onClick={e => { const b = e.target.closest('[data-sec]'); if (b) { e.preventDefault(); onNavigate?.(b.dataset.sec, b.dataset.id); } }}
     />
   );
 }
 
-const QLINK_SPAN = name => `<span contenteditable="false" data-qlink="1" style="display:inline-flex;align-items:center;background:#0d1428;border:2px solid #7dd3fc;color:#7dd3fc;padding:2px 10px;border-radius:20px;font-size:0.88em;font-family:'Fredoka',sans-serif;font-weight:600;margin:0 3px;user-select:none;cursor:pointer;vertical-align:middle">🔗 ${name}</span>`;
+const QLINK_SPAN = name => `<span contenteditable="false" data-qlink="1" style="display:inline-flex;align-items:center;background:var(--c-0d1428);border:2px solid var(--c-7dd3fc);color:var(--c-7dd3fc);padding:2px 10px;border-radius:20px;font-size:0.88em;font-family:'Fredoka',sans-serif;font-weight:600;margin:0 3px;user-select:none;cursor:pointer;vertical-align:middle">🔗 ${name}</span>`;
 
 // ── chapter editor ─────────────────────────────────────────────────────────────
 
@@ -256,42 +256,42 @@ export function ChapterEditor({ content, onSave, requestLink, onNavigate }) {
     save();
   }
 
-  const TB = { background: "none", border: "1px solid #2a2a2a", color: "#888", cursor: "pointer", borderRadius: 4, padding: "2px 9px", fontFamily: "'Fredoka', sans-serif", fontSize: 12 };
-  const SWATCHES = ["#c9b99a", "#ff1d8e", "#7dd3fc", "#22c55e", "#f59e0b", "#ffffff"];
+  const TB = { background: "none", border: "1px solid var(--c-2a2a2a)", color: "#888", cursor: "pointer", borderRadius: 4, padding: "2px 9px", fontFamily: "'Fredoka', sans-serif", fontSize: 12 };
+  const SWATCHES = ["var(--c-c9b99a)", "var(--c-ff1d8e)", "var(--c-7dd3fc)", "#22c55e", "#f59e0b", "#ffffff"];
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <div style={{ display: "flex", gap: 4, padding: "4px 10px", borderBottom: "1px solid #1e1e1e", flexShrink: 0, alignItems: "center", background: "#0d0d0d", position: "relative" }}>
+      <div style={{ display: "flex", gap: 4, padding: "4px 10px", borderBottom: "1px solid var(--c-1e1e1e)", flexShrink: 0, alignItems: "center", background: "var(--c-0d0d0d)", position: "relative" }}>
         <button title="Bold"         onMouseDown={e => { e.preventDefault(); cmd('bold'); }}          style={{ ...TB, fontWeight: 900 }}>B</button>
         <button title="Italic"       onMouseDown={e => { e.preventDefault(); cmd('italic'); }}        style={{ ...TB, fontStyle: "italic" }}>I</button>
-        <div style={{ width: 1, height: 14, background: "#2a2a2a", margin: "0 2px" }} />
+        <div style={{ width: 1, height: 14, background: "var(--c-2a2a2a)", margin: "0 2px" }} />
         <button title="Align left"   onMouseDown={e => { e.preventDefault(); cmd('justifyLeft'); }}  style={{ ...TB, letterSpacing: 1 }}>≡L</button>
         <button title="Align center" onMouseDown={e => { e.preventDefault(); cmd('justifyCenter'); }}style={{ ...TB, letterSpacing: 1 }}>≡C</button>
-        <div style={{ width: 1, height: 14, background: "#2a2a2a", margin: "0 2px" }} />
+        <div style={{ width: 1, height: 14, background: "var(--c-2a2a2a)", margin: "0 2px" }} />
         {/* font colour: quick swatches + custom picker */}
         {SWATCHES.map(c => (
           <button key={c} title={`Text colour ${c}`} onMouseDown={e => { e.preventDefault(); saveSelection(); applyColor(c); }}
-            style={{ width: 15, height: 15, borderRadius: "50%", background: c, border: "1px solid #2a2a2a", cursor: "pointer", padding: 0, flexShrink: 0 }} />
+            style={{ width: 15, height: 15, borderRadius: "50%", background: c, border: "1px solid var(--c-2a2a2a)", cursor: "pointer", padding: 0, flexShrink: 0 }} />
         ))}
-        <label title="Custom text colour" style={{ position: "relative", width: 16, height: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#888", fontSize: 13, fontWeight: 900, border: "1px solid #2a2a2a", borderRadius: 4 }}
+        <label title="Custom text colour" style={{ position: "relative", width: 16, height: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#888", fontSize: 13, fontWeight: 900, border: "1px solid var(--c-2a2a2a)", borderRadius: 4 }}
           onMouseDown={saveSelection}>
           🎨
-          <input type="color" defaultValue="#c9b99a" onChange={e => applyColor(e.target.value)}
+          <input type="color" defaultValue="var(--c-c9b99a)" onChange={e => applyColor(e.target.value)}
             style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }} />
         </label>
         {requestLink && <>
-          <div style={{ width: 1, height: 14, background: "#2a2a2a", margin: "0 2px" }} />
-          <button onClick={handleInsertLink} style={{ ...TB, color: "#7dd3fc", borderColor: "#3a3a3a" }}>🔗 Link</button>
+          <div style={{ width: 1, height: 14, background: "var(--c-2a2a2a)", margin: "0 2px" }} />
+          <button onClick={handleInsertLink} style={{ ...TB, color: "var(--c-7dd3fc)", borderColor: "#3a3a3a" }}>🔗 Link</button>
         </>}
         {scenes.length > 0 && (
           <div ref={sceneMenuRef} style={{ position: "relative" }}>
-            <button onClick={() => setSceneMenu(v => !v)} style={{ ...TB, color: "#c050a0", borderColor: "#3a3a3a" }}>🎬 Scenes ({scenes.length})</button>
+            <button onClick={() => setSceneMenu(v => !v)} style={{ ...TB, color: "var(--c-c050a0)", borderColor: "#3a3a3a" }}>🎬 Scenes ({scenes.length})</button>
             {sceneMenu && (
-              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8, zIndex: 50, padding: "4px 0", boxShadow: "0 4px 20px rgba(0,0,0,0.7)", minWidth: 260, maxHeight: 320, overflowY: "auto" }}>
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, background: "var(--c-1a1a1a)", border: "1px solid var(--c-2a2a2a)", borderRadius: 8, zIndex: 50, padding: "4px 0", boxShadow: "0 4px 20px rgba(0,0,0,0.7)", minWidth: 260, maxHeight: 320, overflowY: "auto" }}>
                 {scenes.map((s, i) => (
                   <div key={i} onMouseDown={e => { e.preventDefault(); jumpToScene(i); }}
-                    style={{ padding: "7px 14px", cursor: "pointer", color: "#c9b99a", fontSize: 12, fontFamily: "'Fredoka', sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 360 }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#28102a"}
+                    style={{ padding: "7px 14px", cursor: "pointer", color: "var(--c-c9b99a)", fontSize: 12, fontFamily: "'Fredoka', sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 360 }}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--c-28102a)"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                     <span style={{ color: "#555", marginRight: 8 }}>{i + 1}</span>{s.toUpperCase()}
                   </div>
@@ -312,12 +312,12 @@ export function ChapterEditor({ content, onSave, requestLink, onNavigate }) {
         onBlur={onBlur}
         onClick={onEditorClick}
         onContextMenu={onContextMenu}
-        style={{ flex: 1, outline: "none", padding: "20px 24px", color: "#c9b99a", fontSize: 15, fontFamily: "'Fredoka', sans-serif", lineHeight: 1.8, overflowY: "auto", background: "#111", border: "2px solid #2a2a2a", borderRadius: 10, boxSizing: "border-box" }}
+        style={{ flex: 1, outline: "none", padding: "20px 24px", color: "var(--c-c9b99a)", fontSize: 15, fontFamily: "'Fredoka', sans-serif", lineHeight: 1.8, overflowY: "auto", background: "var(--c-111)", border: "2px solid var(--c-2a2a2a)", borderRadius: 10, boxSizing: "border-box" }}
       />
       {linkMenu && (
-        <div ref={menuRef} style={{ position: "fixed", top: linkMenu.y, left: linkMenu.x, background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8, zIndex: 9999, padding: "4px 0", boxShadow: "0 4px 20px rgba(0,0,0,0.7)", minWidth: 150 }}>
-          <div onMouseDown={e => { e.stopPropagation(); changeLink(); }} style={{ padding: "8px 16px", cursor: "pointer", color: "#7dd3fc", fontSize: 13, fontFamily: "'Fredoka', sans-serif" }}>Change link…</div>
-          <div onMouseDown={e => { e.stopPropagation(); removeLink(); }} style={{ padding: "8px 16px", cursor: "pointer", color: "#ff1d8e", fontSize: 13, fontFamily: "'Fredoka', sans-serif" }}>Remove link</div>
+        <div ref={menuRef} style={{ position: "fixed", top: linkMenu.y, left: linkMenu.x, background: "var(--c-1a1a1a)", border: "1px solid var(--c-2a2a2a)", borderRadius: 8, zIndex: 9999, padding: "4px 0", boxShadow: "0 4px 20px rgba(0,0,0,0.7)", minWidth: 150 }}>
+          <div onMouseDown={e => { e.stopPropagation(); changeLink(); }} style={{ padding: "8px 16px", cursor: "pointer", color: "var(--c-7dd3fc)", fontSize: 13, fontFamily: "'Fredoka', sans-serif" }}>Change link…</div>
+          <div onMouseDown={e => { e.stopPropagation(); removeLink(); }} style={{ padding: "8px 16px", cursor: "pointer", color: "var(--c-ff1d8e)", fontSize: 13, fontFamily: "'Fredoka', sans-serif" }}>Remove link</div>
         </div>
       )}
     </div>
@@ -333,8 +333,8 @@ export function PinIcon({ pinned }) {
       style={{ transform: pinned ? "rotate(35deg)" : "none", transition: "transform 0.15s ease" }}>
       <path
         d="M16 3H8V5H9V11L6.5 13.5V15H11V21L12 22.5L13 21V15H17.5V13.5L15 11V5H16V3Z"
-        fill={pinned ? "#ff1d8e" : "none"}
-        stroke={pinned ? "#ff1d8e" : "#555"}
+        fill={pinned ? "var(--c-ff1d8e)" : "none"}
+        stroke={pinned ? "var(--c-ff1d8e)" : "#555"}
         strokeWidth="1.4"
         strokeLinejoin="round"
       />
@@ -349,7 +349,7 @@ export function FolderIcon() {
       <path
         d="M3 6.5C3 5.67 3.67 5 4.5 5H9L11 7.5H19.5C20.33 7.5 21 8.17 21 9V17.5C21 18.33 20.33 19 19.5 19H4.5C3.67 19 3 18.33 3 17.5V6.5Z"
         fill="none"
-        stroke="#ff1d8e"
+        stroke="var(--c-ff1d8e)"
         strokeWidth="1.6"
         strokeLinejoin="round"
       />
@@ -357,14 +357,16 @@ export function FolderIcon() {
   );
 }
 
-export function EditableText({ val, style, onEdit }) {
+export function EditableText({ val, style, onEdit, display }) {
   const [editing, setEditing] = useState(false);
   const [v, setV] = useState(val);
+  // display: show this text instead of the real value, non-editable (disguise mode)
+  if (display != null) return <div style={{ ...style, cursor: "default" }}>{display}</div>;
   if (editing) return (
     <input autoFocus value={v} onChange={e => setV(e.target.value)}
       onBlur={() => { onEdit(v); setEditing(false); }}
       onKeyDown={e => { if (e.key === "Enter") { onEdit(v); setEditing(false); } }}
-      style={{ ...style, background: "#1a1a1a", border: "1px solid #444", borderRadius: 4, padding: "2px 6px", color: "#e8d9c0", width: "100%", outline: "none" }} />
+      style={{ ...style, background: "var(--c-1a1a1a)", border: "1px solid #444", borderRadius: 4, padding: "2px 6px", color: "var(--c-e8d9c0)", width: "100%", outline: "none" }} />
   );
   return <div style={{ ...style, cursor: "text" }} onClick={() => { setV(val); setEditing(true); }} title="Click to edit">{val}</div>;
 }
@@ -376,7 +378,7 @@ export function EditableArea({ val, style, onEdit }) {
     <textarea autoFocus value={v} onChange={e => setV(e.target.value)}
       onKeyDown={e => textareaTab(e, v, setV)}
       onBlur={() => { onEdit(v); setEditing(false); }}
-      style={{ ...style, background: "#1a1a1a", border: "1px solid #444", borderRadius: 4, padding: "8px", color: "#c9b99a", width: "100%", resize: "vertical", outline: "none", fontFamily: "inherit", lineHeight: 1.6, tabSize: 4 }} />
+      style={{ ...style, background: "var(--c-1a1a1a)", border: "1px solid #444", borderRadius: 4, padding: "8px", color: "var(--c-c9b99a)", width: "100%", resize: "vertical", outline: "none", fontFamily: "inherit", lineHeight: 1.6, tabSize: 4 }} />
   );
   return <div style={{ ...style, cursor: "text", whiteSpace: "pre-wrap" }} onClick={() => { setV(val); setEditing(true); }} title="Click to edit">{val || <span style={{ color: "#555", fontStyle: "italic" }}>Click to add…</span>}</div>;
 }
@@ -385,7 +387,7 @@ export function CharBadge({ c }) {
   if (!c) return <span style={{ color: "#555" }}>Unknown</span>;
   return <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
     <div style={{ width: 10, height: 10, borderRadius: "50%", background: c.color }} />
-    <span style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 600, color: "#7dd3fc", fontSize: 16 }}>{c.name}</span>
+    <span style={{ fontFamily: "'Fredoka', sans-serif", fontWeight: 600, color: "var(--c-7dd3fc)", fontSize: 16 }}>{c.name}</span>
   </span>;
 }
 
@@ -440,12 +442,12 @@ export function OutlineEditor({ outline, charId, onUpdate, onAdd, onReorder, onR
           }}
           onDragEnd={() => { setDragOverIdx(null); dragFrom.current = null; }}
           style={{
-            background: "#161616",
-            border: `2px solid ${dragOverIdx === idx ? "#ff1d8e" : "#2a2a2a"}`,
+            background: "var(--c-161616)",
+            border: `2px solid ${dragOverIdx === idx ? "var(--c-ff1d8e)" : "var(--c-2a2a2a)"}`,
             borderRadius: 10,
             padding: "12px 14px 12px",
             marginBottom: 12,
-            boxShadow: dragOverIdx === idx ? "0 0 0 2px #ff1d8e40" : "2px 2px 0 #0d0d0d",
+            boxShadow: dragOverIdx === idx ? "0 0 0 2px var(--c-ff1d8e40)" : "2px 2px 0 var(--c-0d0d0d)",
             transition: "border-color 0.1s, box-shadow 0.1s",
           }}
         >
@@ -456,7 +458,7 @@ export function OutlineEditor({ outline, charId, onUpdate, onAdd, onReorder, onR
             >⠿</div>
             <button
               onClick={() => onRequestDelete(block)}
-              style={{ background: "#1a0828", border: "2px solid #ff1d8e", color: "#ff1d8e", width: 28, height: 28, borderRadius: 6, cursor: "pointer", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}
+              style={{ background: "var(--c-1a0828)", border: "2px solid var(--c-ff1d8e)", color: "var(--c-ff1d8e)", width: 28, height: 28, borderRadius: 6, cursor: "pointer", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}
             >×</button>
           </div>
           <EditableArea
@@ -484,7 +486,7 @@ export function ColorFieldWithHistory({ label, value, prevValue, onEdit }) {
           onChange={e => onEdit(e.target.value)}
           style={{ width: 44, height: 36, padding: 0, cursor: "pointer", background: "none", border: "none" }}
         />
-        <div style={{ width: 32, height: 32, borderRadius: 8, background: current, border: "2px solid #333", boxShadow: "2px 2px 0 #0a0a0a", flexShrink: 0 }} title="Current" />
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: current, border: "2px solid #333", boxShadow: "2px 2px 0 var(--c-0a0a0a)", flexShrink: 0 }} title="Current" />
         {showPrev && <>
           <span style={{ color: "#555", fontSize: 18, fontWeight: 700, lineHeight: 1 }}>←</span>
           <div style={{ width: 24, height: 24, borderRadius: 6, background: prevValue, border: "1px solid #444", opacity: 0.55, flexShrink: 0 }} title="Previous colour" />
@@ -510,8 +512,8 @@ export function HairstyleInput({ hairstyles, onEdit }) {
       {hairstyles.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
           {hairstyles.map(h => (
-            <div key={h} style={{ display: "flex", alignItems: "center", gap: 6, background: "#1a1a1a", border: "2px solid #2a2a2a", borderRadius: 20, padding: "4px 8px 4px 12px" }}>
-              <span style={{ fontSize: 13, color: "#c9b99a", fontWeight: 500, fontFamily: "'Fredoka', sans-serif" }}>{h}</span>
+            <div key={h} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--c-1a1a1a)", border: "2px solid var(--c-2a2a2a)", borderRadius: 20, padding: "4px 8px 4px 12px" }}>
+              <span style={{ fontSize: 13, color: "var(--c-c9b99a)", fontWeight: 500, fontFamily: "'Fredoka', sans-serif" }}>{h}</span>
               <button onClick={() => onEdit(hairstyles.filter(x => x !== h))} style={{ background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "0 2px", fontWeight: 700 }}>×</button>
             </div>
           ))}
@@ -547,16 +549,16 @@ export function TraitSelector({ traits, onEdit }) {
             key={trait}
             onClick={() => toggle(trait)}
             style={{
-              background: active ? "#ff1d8e" : "#1a1a1a",
-              border: `2px solid ${active ? "#ff1d8e" : "#2a2a2a"}`,
-              color: active ? "#0d0d0d" : "#777",
+              background: active ? "var(--c-ff1d8e)" : "var(--c-1a1a1a)",
+              border: `2px solid ${active ? "var(--c-ff1d8e)" : "var(--c-2a2a2a)"}`,
+              color: active ? "var(--c-0d0d0d)" : "#777",
               padding: "5px 13px",
               borderRadius: 20,
               cursor: "pointer",
               fontSize: 12,
               fontWeight: active ? 700 : 500,
               fontFamily: "'Fredoka', sans-serif",
-              boxShadow: active ? "2px 2px 0 #3a0a2e" : "none",
+              boxShadow: active ? "2px 2px 0 var(--c-3a0a2e)" : "none",
               transition: "all 0.12s",
             }}
           >

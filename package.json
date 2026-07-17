@@ -1,7 +1,7 @@
 {
   "name": "qwosid",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A desktop story organiser for writers — characters, chapters, outlines, relationships, and screenplay PDF export.",
   "author": "Nicolas Giammarresi",
   "license": "MIT",

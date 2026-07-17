@@ -247,9 +247,9 @@ export function exportStoryAsPDF(story) {
     sectionPage("Relationships");
     story.relationships.forEach(r => {
       need(16);
-      const cA = charMap[r.charA]?.name || "?";
-      const cB = charMap[r.charB]?.name || "?";
-      itemTitle(`${cA}  ↔  ${cB}`, 13);
+      const members = (r.members && r.members.length ? r.members : [r.charA, r.charB].filter(Boolean));
+      const names = members.map(id => charMap[id]?.name || "?").join("  ↔  ");
+      itemTitle(names || "Relationship", 13);
       if (r.description) txt(r.description, 11);
       divider();
     });
